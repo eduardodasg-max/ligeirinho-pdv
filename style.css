@@ -1,1 +1,48 @@
+* {
+  box-sizing: border-box;
+}
 
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f1f5f9;
+  color: #18324b;
+}
+
+header {
+  background: #123b63;
+  color: white;
+  padding: 22px;
+  border-bottom: 5px solid #d93636;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 27px;
+}
+
+header p {
+  margin: 6px 0 0;
+}
+
+main {
+  max-width: 900px;
+  margin: auto;
+  padding: 20px;
+}
+
+.painel {
+  background: white;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px #00000012;
+}
+
+.status {
+  display: inline-block;
+  background: #e0f2e9;
+  color: #17633b;
+  padding: 7px 12px;
+  border-radius: 20px;
+  font-weight: bold;
+}
