@@ -1,6 +1,6 @@
 
 // LIGEIRINHO PDV
-// Mesas e lançamento de pedidos
+// Mesas, pedidos e salvamento local
 
 document.addEventListener("DOMContentLoaded", () => {
   const painel = document.querySelector(".painel");
@@ -14,8 +14,20 @@ document.addEventListener("DOMContentLoaded", () => {
     { nome: "Hambúrguer", preco: 28.00 }
   ];
 
-  const pedidos = {};
+  // Recupera pedidos salvos no navegador
+  let pedidos = {};
+
+  try {
+    pedidos = JSON.parse(localStorage.getItem("ligeirinho_pedidos")) || {};
+  } catch (erro) {
+    pedidos = {};
+  }
+
   let mesaAtual = null;
+
+  function salvarPedidos() {
+    localStorage.setItem("ligeirinho_pedidos", JSON.stringify(pedidos));
+  }
 
   function mostrarMesas() {
     painel.innerHTML = `
@@ -119,6 +131,8 @@ document.addEventListener("DOMContentLoaded", () => {
       subtotal: produto.preco * qtd
     });
 
+    salvarPedidos();
+
     document.querySelector("#produto").value = "";
     document.querySelector("#quantidade").value = 1;
 
@@ -167,6 +181,7 @@ document.addEventListener("DOMContentLoaded", () => {
           pedidos[mesaAtual].splice(indice, 1);
         }
 
+        salvarPedidos();
         atualizarLista();
       });
 
