@@ -131,19 +131,30 @@ document.addEventListener("DOMContentLoaded", () => {
     const total = document.querySelector("#total");
 
     lista.innerHTML = "";
-
     let soma = 0;
 
     pedidos[mesaAtual].forEach((item, indice) => {
-      const linha = document.createElement("p");
-
       soma += item.subtotal;
 
-      linha.textContent =
-        `${item.quantidade}x ${item.nome} — R$ ${item.subtotal.toFixed(2).replace(".", ",")} `;
+      const linha = document.createElement("div");
+      linha.className = "item-pedido";
+
+      const informacoes = document.createElement("div");
+      informacoes.className = "item-info";
+
+      const nome = document.createElement("span");
+      nome.className = "item-nome";
+      nome.textContent = `${item.quantidade}x ${item.nome}`;
+
+      const valor = document.createElement("span");
+      valor.className = "item-valor";
+      valor.textContent =
+        `R$ ${item.subtotal.toFixed(2).replace(".", ",")}`;
+
+      informacoes.appendChild(nome);
+      informacoes.appendChild(valor);
 
       const botaoRemover = document.createElement("button");
-
       botaoRemover.textContent = "Remover";
 
       botaoRemover.addEventListener("click", () => {
@@ -159,6 +170,7 @@ document.addEventListener("DOMContentLoaded", () => {
         atualizarLista();
       });
 
+      linha.appendChild(informacoes);
       linha.appendChild(botaoRemover);
       lista.appendChild(linha);
     });
