@@ -1,3 +1,4 @@
+
 // LIGEIRINHO PDV
 // Mesas e lançamento de pedidos
 
@@ -127,8 +128,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const botaoRemover = document.createElement("button");
       botaoRemover.textContent = "Remover";
+
       botaoRemover.addEventListener("click", () => {
-        pedidos[mesaAtual].splice(indice, 1);
+        item.quantidade -= 1;
+        item.subtotal = item.preco * item.quantidade;
+
+        if (item.quantidade <= 0) {
+          pedidos[mesaAtual].splice(indice, 1);
+        }
+
         atualizarLista();
       });
 
