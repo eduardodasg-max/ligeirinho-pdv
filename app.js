@@ -1,7 +1,7 @@
 
 /* =====================================================
    LIGEIRINHO PDV
-   Supabase + Produtos + Mesas + Pedidos
+   Supabase + Produtos + Mesas + Pedidos + Realtime
    ===================================================== */
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -10,35 +10,65 @@ document.addEventListener("DOMContentLoaded", async () => {
   const SUPABASE_URL = "https://ewfxcsaxxsqixtmxruxz.supabase.co";
   const SUPABASE_KEY = "COLE_AQUI_SUA_PUBLISHABLE_KEY";
 
+  if (!window.supabase || !painel) {
+    alert("Não foi possível iniciar o Ligeirinho.");
+    return;
+  }
+
+  if (SUPABASE_KEY === "COLE_AQUI_SUA_PUBLISHABLE_KEY") {
+    painel.innerHTML = `
+      <h2>Configuração necessária</h2>
+      <p>Insira a chave pública do Supabase no arquivo app.js.</p>
+    `;
+    return;
+  }
+
   const supabase = window.supabase.createClient(
     SUPABASE_URL,
     SUPABASE_KEY
   );
 
   let usuarioAtual = null;
+  let perfilAtual = null;
   let produtos = [];
+  let mesas = [];
+  let pedidosAbertos = [];
   let mesaAtual = null;
+  let pedidoAtual = null;
+  let itensAtuais = [];
+  let canalRealtime = null;
 
-  // Recuperar pedidos salvos neste aparelho
-  let pedidos = {};
-
-  try {
-    pedidos = JSON.parse(
-      localStorage.getItem("ligeirinho_pedidos")
-    ) || {};
-  } catch (erro) {
-    pedidos = {};
-  }
-
-  function salvarPedidos() {
-    localStorage.setItem(
-      "ligeirinho_pedidos",
-      JSON.stringify(pedidos)
-    );
-  }
+  const dinheiro = valor =>
+    Number(valor || 0).toLocaleString("pt-BR", {
+      style: "currency",
+      currency: "BRL"
+    });
 
   function mensagem(texto) {
     alert(texto);
+  }
+
+  function erro(texto, detalhe) {
+    console.error(texto, detalhe);
+    mensagem(texto + (detalhe?.message ? "\n" + detalhe.message : ""));
+  }
+
+  function limparPainel() {
+    painel.innerHTML = "";
+  }
+
+  function escapar(texto) {
+    return String(texto ?? "").replace(/[&<>"']/g, caractere => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[caractere]);
+  }
+
+  function voltarInicio() {
+    mostrarInicio();
   }
 
   // =====================================================
@@ -46,6 +76,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   // =====================================================
 
   function mostrarLogin() {
+    limparPainel();
+
     painel.innerHTML = `
       <h2>Acesso ao Ligeirinho</h2>
 
@@ -70,129 +102,185 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    const botao = document.querySelector("#entrar");
+    botao.disabled = true;
+    botao.textContent = "Entrando...";
+
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password: senha
     });
 
     if (error) {
-      mensagem("Não foi possível entrar: " + error.message);
+      botao.disabled = false;
+      botao.textContent = "Entrar";
+      erro("Não foi possível entrar.", error);
       return;
     }
 
-    await verificarAdministrador();
+    await verificarUsuario();
   }
 
   // =====================================================
-  // VERIFICAR PERMISSÃO
+  // PERFIL E PERMISSÕES
   // =====================================================
 
-  async function verificarAdministrador() {
-    const { data: resultado, error: erroLogin } =
-      await supabase.auth.getUser();
+  function temPermissao(...funcoes) {
+    return funcoes.includes(perfilAtual?.funcao);
+  }
 
-    if (erroLogin || !resultado.user) {
+  async function verificarUsuario() {
+    const { data, error } = await supabase.auth.getUser();
+
+    if (error || !data.user) {
       mostrarLogin();
       return;
     }
 
-    usuarioAtual = resultado.user;
+    usuarioAtual = data.user;
 
-    const { data: perfil, error } = await supabase
+    const { data: perfil, error: erroPerfil } = await supabase
       .from("perfis_usuarios")
       .select("nome, funcao, ativo")
       .eq("id", usuarioAtual.id)
       .single();
 
-    if (error || !perfil || !perfil.ativo) {
-      mensagem("Não foi possível validar seu perfil.");
+    if (erroPerfil || !perfil || !perfil.ativo) {
+      mensagem("Perfil não encontrado ou usuário inativo.");
       await supabase.auth.signOut();
       mostrarLogin();
       return;
     }
 
-    if (perfil.funcao !== "administrador") {
-      mensagem("Acesso permitido somente ao administrador.");
+    if (!["administrador", "caixa", "garcom"].includes(perfil.funcao)) {
+      mensagem("Função de usuário não reconhecida.");
       await supabase.auth.signOut();
       mostrarLogin();
       return;
     }
 
-    mostrarInicio(perfil.nome);
+    perfilAtual = perfil;
+
+    await carregarProdutosSilencioso();
+    await carregarDadosMesas();
+    iniciarRealtime();
+    mostrarInicio();
   }
 
   // =====================================================
   // TELA PRINCIPAL
   // =====================================================
 
-  function mostrarInicio(nome) {
+  function mostrarInicio() {
+    limparPainel();
+
+    const nome = escapar(perfilAtual?.nome || "Equipe");
+    const funcao = escapar(perfilAtual?.funcao || "");
+
     painel.innerHTML = `
       <h2>Bem-vindo, ${nome}!</h2>
-      <p>Área administrativa do Ligeirinho PDV.</p>
+      <p>Perfil: ${funcao}</p>
 
-      <button id="botaoProdutos">Produtos</button>
       <button id="botaoMesas">Controle de Mesas</button>
+
+      ${temPermissao("administrador")
+        ? '<button id="botaoProdutos">Produtos</button>'
+        : ""}
+
+      ${temPermissao("administrador", "caixa")
+        ? '<button id="botaoContas">Contas aguardando pagamento</button>'
+        : ""}
+
+      <button id="atualizar">Atualizar dados</button>
       <button id="sair">Sair</button>
     `;
 
-    document.querySelector("#botaoProdutos").onclick =
-      carregarProdutos;
+    document.querySelector("#botaoMesas").onclick = mostrarMesas;
 
-    document.querySelector("#botaoMesas").onclick =
-      mostrarMesas;
+    if (temPermissao("administrador")) {
+      document.querySelector("#botaoProdutos").onclick = carregarProdutos;
+    }
 
-    document.querySelector("#sair").onclick = async () => {
-      await supabase.auth.signOut();
-      usuarioAtual = null;
-      mostrarLogin();
+    if (temPermissao("administrador", "caixa")) {
+      document.querySelector("#botaoContas").onclick =
+        carregarContasAguardando;
+    }
+
+    document.querySelector("#atualizar").onclick = async () => {
+      await carregarDadosMesas();
+      mensagem("Dados atualizados.");
+      mostrarMesas();
     };
+
+    document.querySelector("#sair").onclick = sair;
+  }
+
+  async function sair() {
+    if (canalRealtime) {
+      await supabase.removeChannel(canalRealtime);
+      canalRealtime = null;
+    }
+
+    await supabase.auth.signOut();
+
+    usuarioAtual = null;
+    perfilAtual = null;
+    produtos = [];
+    mesas = [];
+    pedidosAbertos = [];
+
+    mostrarLogin();
   }
 
   // =====================================================
   // PRODUTOS
   // =====================================================
 
-  async function carregarProdutos() {
-    painel.innerHTML = `
-      <h2>Produtos</h2>
-      <p>Carregando produtos...</p>
-    `;
-
+  async function carregarProdutosSilencioso() {
     const { data, error } = await supabase
       .from("produtos")
       .select("*")
       .order("nome");
 
     if (error) {
-      mensagem("Erro ao carregar produtos: " + error.message);
-      mostrarInicio("Administrador");
+      erro("Erro ao carregar produtos.", error);
       return;
     }
 
     produtos = data || [];
+  }
+
+  async function carregarProdutos() {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Produtos</h2>
+      <p>Carregando...</p>
+    `;
+
+    await carregarProdutosSilencioso();
     mostrarListaProdutos();
   }
 
   function mostrarListaProdutos() {
+    limparPainel();
+
     painel.innerHTML = `
       <h2>Cadastro de Produtos</h2>
-
       <button id="novoProduto">Novo produto</button>
-      <button id="voltarInicio">Voltar</button>
-
+      <button id="voltar">Voltar</button>
       <div id="listaProdutos"></div>
     `;
 
     document.querySelector("#novoProduto").onclick =
       () => mostrarFormularioProduto();
 
-    document.querySelector("#voltarInicio").onclick =
-      () => mostrarInicio("Administrador");
+    document.querySelector("#voltar").onclick = mostrarInicio;
 
     const lista = document.querySelector("#listaProdutos");
 
-    if (produtos.length === 0) {
-      lista.innerHTML = "<p>Nenhum produto cadastrado.</p>";
+    if (!produtos.length) {
+      lista.textContent = "Nenhum produto cadastrado.";
       return;
     }
 
@@ -208,17 +296,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       const detalhes = document.createElement("span");
       detalhes.textContent =
-        `${produto.categoria} | R$ ${Number(produto.preco_venda).toFixed(2).replace(".", ",")} | Estoque: ${produto.estoque}`;
+        `${produto.categoria} | ${dinheiro(produto.preco_venda)} | Estoque: ${produto.estoque}`;
 
-      info.appendChild(nome);
-      info.appendChild(detalhes);
+      info.append(nome, detalhes);
 
       const editar = document.createElement("button");
       editar.textContent = "Editar";
       editar.onclick = () => mostrarFormularioProduto(produto);
 
-      item.appendChild(info);
-      item.appendChild(editar);
+      item.append(info, editar);
       lista.appendChild(item);
     });
   }
@@ -226,14 +312,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   function mostrarFormularioProduto(produto = null) {
     const editando = Boolean(produto);
 
+    limparPainel();
+
     painel.innerHTML = `
       <h2>${editando ? "Editar produto" : "Novo produto"}</h2>
 
       <label>Código</label>
-      <input id="codigo" value="${produto?.codigo || ""}">
+      <input id="codigo">
 
       <label>Nome</label>
-      <input id="nome" value="${produto?.nome || ""}">
+      <input id="nome">
 
       <label>Categoria</label>
       <select id="categoria">
@@ -246,35 +334,34 @@ document.addEventListener("DOMContentLoaded", async () => {
       </select>
 
       <label>Preço de venda</label>
-      <input id="preco" type="number" min="0" step="0.01"
-        value="${produto?.preco_venda ?? ""}">
+      <input id="preco" type="number" min="0" step="0.01">
 
       <label>Custo</label>
-      <input id="custo" type="number" min="0" step="0.01"
-        value="${produto?.custo ?? ""}">
+      <input id="custo" type="number" min="0" step="0.01">
 
       <label>Estoque</label>
-      <input id="estoque" type="number" min="0" step="0.01"
-        value="${produto?.estoque ?? 0}">
+      <input id="estoque" type="number" min="0" step="0.01">
 
       <label>Estoque mínimo</label>
-      <input id="estoqueMinimo" type="number" min="0" step="0.01"
-        value="${produto?.estoque_minimo ?? 0}">
+      <input id="estoqueMinimo" type="number" min="0" step="0.01">
 
       <button id="salvarProduto">Salvar produto</button>
-      <button id="cancelarProduto">Cancelar</button>
+      <button id="cancelar">Cancelar</button>
     `;
 
-    if (produto?.categoria) {
-      document.querySelector("#categoria").value =
-        produto.categoria;
-    }
+    document.querySelector("#codigo").value = produto?.codigo || "";
+    document.querySelector("#nome").value = produto?.nome || "";
+    document.querySelector("#categoria").value = produto?.categoria || "";
+    document.querySelector("#preco").value = produto?.preco_venda ?? "";
+    document.querySelector("#custo").value = produto?.custo ?? "";
+    document.querySelector("#estoque").value = produto?.estoque ?? 0;
+    document.querySelector("#estoqueMinimo").value =
+      produto?.estoque_minimo ?? 0;
 
     document.querySelector("#salvarProduto").onclick =
       () => salvarProduto(produto?.id);
 
-    document.querySelector("#cancelarProduto").onclick =
-      mostrarListaProdutos;
+    document.querySelector("#cancelar").onclick = mostrarListaProdutos;
   }
 
   async function salvarProduto(id) {
@@ -291,12 +378,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
-    if (
-      !Number.isFinite(preco) || preco < 0 ||
-      !Number.isFinite(custo) || custo < 0 ||
-      !Number.isFinite(estoque) || estoque < 0 ||
-      !Number.isFinite(estoqueMinimo) || estoqueMinimo < 0
-    ) {
+    if ([preco, custo, estoque, estoqueMinimo].some(
+      valor => !Number.isFinite(valor) || valor < 0
+    )) {
       mensagem("Confira os valores informados.");
       return;
     }
@@ -326,12 +410,48 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (resultado.error) {
-      mensagem("Erro ao salvar: " + resultado.error.message);
+      erro("Erro ao salvar produto.", resultado.error);
       return;
     }
 
     mensagem("Produto salvo com sucesso!");
-    await carregarProdutos();
+    await carregarProdutosSilencioso();
+    mostrarListaProdutos();
+  }
+
+  // =====================================================
+  // DADOS DAS MESAS E PEDIDOS
+  // =====================================================
+
+  async function carregarDadosMesas() {
+    const [resultadoMesas, resultadoPedidos] = await Promise.all([
+      supabase
+        .from("mesas")
+        .select("id, numero, status")
+        .order("numero"),
+
+      supabase
+        .from("pedidos")
+        .select("id, mesa_id, garcom_id, status, valor_total, aberto_em, conta_solicitada_em")
+        .eq("status", "aberto")
+    ]);
+
+    if (resultadoMesas.error) {
+      erro("Erro ao carregar mesas.", resultadoMesas.error);
+      return;
+    }
+
+    if (resultadoPedidos.error) {
+      erro("Erro ao carregar pedidos.", resultadoPedidos.error);
+      return;
+    }
+
+    mesas = resultadoMesas.data || [];
+    pedidosAbertos = resultadoPedidos.data || [];
+  }
+
+  function pedidoDaMesa(mesaId) {
+    return pedidosAbertos.find(p => p.mesa_id === mesaId);
   }
 
   // =====================================================
@@ -339,123 +459,227 @@ document.addEventListener("DOMContentLoaded", async () => {
   // =====================================================
 
   async function mostrarMesas() {
+    await carregarDadosMesas();
+
+    limparPainel();
+
     painel.innerHTML = `
       <h2>Controle de Mesas</h2>
       <p>Selecione uma mesa.</p>
       <div id="mesas" class="mesas"></div>
-      <button id="voltarInicio">Voltar</button>
+      <button id="voltar">Voltar</button>
     `;
 
-    document.querySelector("#voltarInicio").onclick =
-      () => mostrarInicio("Administrador");
+    document.querySelector("#voltar").onclick = mostrarInicio;
 
     const area = document.querySelector("#mesas");
 
-    for (let numero = 1; numero <= 50; numero++) {
+    mesas.forEach(mesa => {
+      const pedido = pedidoDaMesa(mesa.id);
       const botao = document.createElement("button");
-      botao.textContent = numero;
+
       botao.className = "mesa";
+      botao.textContent = `Mesa ${mesa.numero}`;
 
-      botao.onclick = () => {
-        mesaAtual = numero;
+      const status = document.createElement("small");
+      status.textContent = mesa.status || "livre";
 
-        if (!pedidos[numero]) {
-          pedidos[numero] = [];
-        }
+      botao.appendChild(document.createElement("br"));
+      botao.appendChild(status);
 
-        mostrarPedido();
-      };
+      if (mesa.status === "ocupada") {
+        botao.classList.add("ocupada");
+      } else if (mesa.status === "aguardando_pagamento") {
+        botao.classList.add("aguardando");
+      } else {
+        botao.classList.add("livre");
+      }
+
+      botao.onclick = () => selecionarMesa(mesa, pedido);
 
       area.appendChild(botao);
+    });
+
+    if (!mesas.length) {
+      area.textContent = "Nenhuma mesa encontrada no banco de dados.";
     }
   }
 
+  async function selecionarMesa(mesa, pedido) {
+    mesaAtual = mesa;
+    pedidoAtual = pedido || null;
+
+    if (!pedidoAtual && mesa.status !== "livre") {
+      mensagem("Esta mesa não está livre e não possui pedido aberto localizado.");
+      await mostrarMesas();
+      return;
+    }
+
+    if (!pedidoAtual) {
+      await abrirMesa(mesa);
+      return;
+    }
+
+    await carregarItensPedido();
+    mostrarPedido();
+  }
+
   // =====================================================
-  // PEDIDOS
+  // ABRIR MESA
+  // =====================================================
+
+  async function abrirMesa(mesa) {
+    if (mesa.status !== "livre") {
+      mensagem("Esta mesa não está livre.");
+      return;
+    }
+
+    const parametros = {
+      p_mesa_id: mesa.id
+    };
+
+    if (temPermissao("garcom")) {
+      parametros.p_garcom_id = usuarioAtual.id;
+    }
+
+    if (temPermissao("caixa")) {
+      const garcom = prompt(
+        "Informe o UUID do garçom responsável por esta mesa:"
+      );
+
+      if (!garcom) return;
+
+      parametros.p_garcom_id = garcom.trim();
+    }
+
+    const { data, error } = await supabase.rpc(
+      "abrir_mesa",
+      parametros
+    );
+
+    if (error) {
+      erro("Não foi possível abrir a mesa.", error);
+      return;
+    }
+
+    await carregarDadosMesas();
+
+    pedidoAtual = pedidosAbertos.find(p => p.mesa_id === mesa.id);
+
+    if (!pedidoAtual && data) {
+      pedidoAtual = Array.isArray(data) ? data[0] : data;
+    }
+
+    if (!pedidoAtual) {
+      mensagem("Mesa aberta. Atualizando os dados...");
+      await mostrarMesas();
+      return;
+    }
+
+    mesaAtual = mesa;
+    await carregarItensPedido();
+    mostrarPedido();
+  }
+
+  // =====================================================
+  // ITENS DO PEDIDO
+  // =====================================================
+
+  async function carregarItensPedido() {
+    if (!pedidoAtual) {
+      itensAtuais = [];
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("itens_pedido")
+      .select("id, pedido_id, produto_id, quantidade, preco_unitario, subtotal, observacao, status_producao")
+      .eq("pedido_id", pedidoAtual.id)
+      .order("criado_em");
+
+    if (error) {
+      erro("Erro ao carregar itens do pedido.", error);
+      return;
+    }
+
+    itensAtuais = data || [];
+  }
+
+  // =====================================================
+  // TELA DO PEDIDO
   // =====================================================
 
   function mostrarPedido() {
-    painel.innerHTML = `
-      <h2>Mesa ${mesaAtual}</h2>
+    if (!mesaAtual || !pedidoAtual) {
+      mostrarMesas();
+      return;
+    }
 
-      <label>Produto</label>
-      <select id="produto">
-        <option value="">Selecione um produto</option>
-        ${produtos
-          .filter(p => p.ativo)
-          .map(p => `
-            <option value="${p.id}">
-              ${p.nome} - R$ ${Number(p.preco_venda).toFixed(2).replace(".", ",")}
+    limparPainel();
+
+    const podeAdicionar = temPermissao(
+      "administrador", "caixa", "garcom"
+    );
+
+    painel.innerHTML = `
+      <h2>Mesa ${mesaAtual.numero}</h2>
+      <p>Pedido aberto</p>
+
+      ${podeAdicionar ? `
+        <label>Produto</label>
+        <select id="produto">
+          <option value="">Selecione um produto</option>
+          ${produtos.filter(p => p.ativo).map(p => `
+            <option value="${escapar(p.id)}">
+              ${escapar(p.nome)} - ${dinheiro(p.preco_venda)}
             </option>
           `).join("")}
-      </select>
+        </select>
 
-      <label>Quantidade</label>
-      <input id="quantidade" type="number" min="1" step="1" value="1">
+        <label>Quantidade</label>
+        <input id="quantidade" type="number" min="0.001"
+          step="0.001" value="1">
 
-      <p id="preco">Preço: R$ 0,00</p>
+        <label>Observação</label>
+        <input id="observacao" placeholder="Ex.: sem cebola">
 
-      <button id="adicionar">Adicionar pedido</button>
-      <button id="voltar">Voltar às mesas</button>
+        <button id="adicionar">Adicionar item</button>
+      ` : ""}
 
       <h3>Itens da mesa</h3>
       <div id="lista"></div>
 
-      <h2 id="total">Total: R$ 0,00</h2>
+      <h2 id="total"></h2>
+
+      <button id="solicitarConta">Solicitar fechamento da conta</button>
+      <button id="voltar">Voltar às mesas</button>
     `;
 
-    document.querySelector("#produto").onchange = atualizarPreco;
-    document.querySelector("#quantidade").oninput = atualizarPreco;
-    document.querySelector("#adicionar").onclick = adicionar;
-    document.querySelector("#voltar").onclick = mostrarMesas;
-
-    atualizarLista();
-  }
-
-  function atualizarPreco() {
-    const id = document.querySelector("#produto").value;
-    const qtd = Number(document.querySelector("#quantidade").value);
-    const produto = produtos.find(p => p.id === id);
-
-    document.querySelector("#preco").textContent =
-      produto && qtd > 0
-        ? `Preço: R$ ${(Number(produto.preco_venda) * qtd).toFixed(2).replace(".", ",")}`
-        : "Preço: R$ 0,00";
-  }
-
-  function adicionar() {
-    const id = document.querySelector("#produto").value;
-    const qtd = Number(document.querySelector("#quantidade").value);
-    const produto = produtos.find(p => p.id === id);
-
-    if (!produto || !Number.isInteger(qtd) || qtd < 1) {
-      mensagem("Selecione um produto e uma quantidade válida.");
-      return;
+    if (podeAdicionar) {
+      document.querySelector("#adicionar").onclick = adicionarItem;
     }
 
-    const preco = Number(produto.preco_venda);
+    document.querySelector("#solicitarConta").onclick =
+      solicitarFechamento;
 
-    pedidos[mesaAtual].push({
-      produto_id: produto.id,
-      nome: produto.nome,
-      quantidade: qtd,
-      preco,
-      subtotal: preco * qtd
-    });
+    document.querySelector("#voltar").onclick = mostrarMesas;
 
-    salvarPedidos();
-    mostrarPedido();
+    atualizarListaItens();
   }
 
-  function atualizarLista() {
+  function atualizarListaItens() {
     const lista = document.querySelector("#lista");
     const total = document.querySelector("#total");
 
     lista.innerHTML = "";
+
     let soma = 0;
 
-    pedidos[mesaAtual].forEach((item, indice) => {
-      soma += item.subtotal;
+    itensAtuais.forEach(item => {
+      const produto = produtos.find(p => p.id === item.produto_id);
+      const nome = produto?.nome || "Produto";
+
+      soma += Number(item.subtotal || 0);
 
       const linha = document.createElement("div");
       linha.className = "item-pedido";
@@ -463,52 +687,370 @@ document.addEventListener("DOMContentLoaded", async () => {
       const info = document.createElement("div");
       info.className = "item-info";
 
-      const nome = document.createElement("span");
-      nome.className = "item-nome";
-      nome.textContent = `${item.quantidade}x ${item.nome}`;
+      const nomeItem = document.createElement("span");
+      nomeItem.className = "item-nome";
+      nomeItem.textContent =
+        `${item.quantidade}x ${nome}`;
 
       const valor = document.createElement("span");
       valor.className = "item-valor";
-      valor.textContent =
-        `R$ ${item.subtotal.toFixed(2).replace(".", ",")}`;
+      valor.textContent = dinheiro(item.subtotal);
 
-      info.appendChild(nome);
-      info.appendChild(valor);
-
-      const remover = document.createElement("button");
-      remover.textContent = "Remover";
-
-      remover.onclick = () => {
-        const pedido = pedidos[mesaAtual][indice];
-
-        if (pedido.quantidade > 1) {
-          pedido.quantidade--;
-          pedido.subtotal = pedido.preco * pedido.quantidade;
-        } else {
-          pedidos[mesaAtual].splice(indice, 1);
-        }
-
-        salvarPedidos();
-        atualizarLista();
-      };
-
+      info.append(nomeItem, valor);
       linha.appendChild(info);
-      linha.appendChild(remover);
+
+      const podeRemover = temPermissao("administrador", "caixa") ||
+        (
+          temPermissao("garcom") &&
+          pedidoAtual.garcom_id === usuarioAtual.id
+        );
+
+      if (podeRemover && item.status_producao === "pendente") {
+        const remover = document.createElement("button");
+        remover.textContent = "Remover";
+        remover.onclick = () => removerItem(item.id);
+        linha.appendChild(remover);
+      }
+
       lista.appendChild(linha);
     });
 
-    total.textContent =
-      `Total: R$ ${soma.toFixed(2).replace(".", ",")}`;
+    total.textContent = "Total: " + dinheiro(soma);
+  }
+
+  // =====================================================
+  // ADICIONAR ITEM
+  // =====================================================
+
+  async function adicionarItem() {
+    const produtoId = document.querySelector("#produto").value;
+    const quantidade = Number(
+      document.querySelector("#quantidade").value
+    );
+    const observacao =
+      document.querySelector("#observacao").value.trim();
+
+    if (!produtoId || !Number.isFinite(quantidade) || quantidade <= 0) {
+      mensagem("Selecione um produto e informe uma quantidade válida.");
+      return;
+    }
+
+    const { error } = await supabase.rpc(
+      "adicionar_item_pedido",
+      {
+        p_pedido_id: pedidoAtual.id,
+        p_produto_id: produtoId,
+        p_quantidade: quantidade,
+        p_observacao: observacao || null
+      }
+    );
+
+    if (error) {
+      erro("Não foi possível adicionar o item.", error);
+      return;
+    }
+
+    await carregarDadosMesas();
+    pedidoAtual = pedidoDaMesa(mesaAtual.id);
+    await carregarItensPedido();
+    mostrarPedido();
+  }
+
+  // =====================================================
+  // REMOVER ITEM
+  // =====================================================
+
+  async function removerItem(itemId) {
+    if (!confirm("Deseja remover este item do pedido?")) return;
+
+    const { error } = await supabase.rpc(
+      "remover_item_pedido",
+      { p_item_id: itemId }
+    );
+
+    if (error) {
+      erro("Não foi possível remover o item.", error);
+      return;
+    }
+
+    await carregarDadosMesas();
+    pedidoAtual = pedidoDaMesa(mesaAtual.id);
+    await carregarItensPedido();
+    mostrarPedido();
+  }
+
+  // =====================================================
+  // SOLICITAR FECHAMENTO DA CONTA
+  // =====================================================
+
+  async function solicitarFechamento() {
+    if (!confirm("Solicitar o fechamento desta conta?")) return;
+
+    const { error } = await supabase.rpc(
+      "solicitar_fechamento_conta",
+      { p_pedido_id: pedidoAtual.id }
+    );
+
+    if (error) {
+      erro("Não foi possível solicitar o fechamento.", error);
+      return;
+    }
+
+    mensagem("Conta enviada para o caixa.");
+    await carregarDadosMesas();
+    mostrarMesas();
+  }
+
+  // =====================================================
+  // CONTAS AGUARDANDO PAGAMENTO
+  // =====================================================
+
+  async function carregarContasAguardando() {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Contas aguardando pagamento</h2>
+      <p>Carregando...</p>
+    `;
+
+    const { data, error } = await supabase.rpc(
+      "listar_contas_aguardando_pagamento"
+    );
+
+    if (error) {
+      erro("Erro ao carregar contas.", error);
+      mostrarInicio();
+      return;
+    }
+
+    mostrarListaContas(data || []);
+  }
+
+  function mostrarListaContas(contas) {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Contas aguardando pagamento</h2>
+      <div id="listaContas"></div>
+      <button id="atualizar">Atualizar</button>
+      <button id="voltar">Voltar</button>
+    `;
+
+    document.querySelector("#atualizar").onclick =
+      carregarContasAguardando;
+
+    document.querySelector("#voltar").onclick = mostrarInicio;
+
+    const lista = document.querySelector("#listaContas");
+
+    if (!contas.length) {
+      lista.textContent = "Nenhuma conta aguardando pagamento.";
+      return;
+    }
+
+    contas.forEach(conta => {
+      const item = document.createElement("div");
+      item.className = "item-pedido";
+
+      const info = document.createElement("div");
+      info.className = "item-info";
+
+      const titulo = document.createElement("strong");
+      titulo.textContent = `Mesa ${conta.numero_mesa ?? conta.mesa_numero ?? ""}`;
+
+      const valor = document.createElement("span");
+      valor.textContent = dinheiro(conta.valor_total);
+
+      info.append(titulo, valor);
+
+      const pagar = document.createElement("button");
+      pagar.textContent = "Registrar pagamento";
+      pagar.onclick = () => mostrarPagamento(conta);
+
+      item.append(info, pagar);
+      lista.appendChild(item);
+    });
+  }
+
+  // =====================================================
+  // PAGAMENTO
+  // =====================================================
+
+  function mostrarPagamento(conta) {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Registrar pagamento</h2>
+      <p>Valor da conta: <strong>${dinheiro(conta.valor_total)}</strong></p>
+
+      <label>Forma de pagamento</label>
+      <select id="forma">
+        <option value="dinheiro">Dinheiro</option>
+        <option value="pix">Pix</option>
+        <option value="debito">Débito</option>
+        <option value="credito">Crédito</option>
+      </select>
+
+      <label>Valor do pagamento</label>
+      <input id="valor" type="number" min="0.01" step="0.01"
+        value="${Number(conta.valor_total || 0)}">
+
+      <div id="campoRecebido">
+        <label>Valor recebido em dinheiro</label>
+        <input id="recebido" type="number" min="0" step="0.01">
+      </div>
+
+      <button id="confirmar">Confirmar pagamento</button>
+      <button id="voltar">Voltar</button>
+    `;
+
+    const forma = document.querySelector("#forma");
+    const campoRecebido = document.querySelector("#campoRecebido");
+
+    forma.onchange = () => {
+      campoRecebido.style.display =
+        forma.value === "dinheiro" ? "block" : "none";
+    };
+
+    forma.onchange();
+
+    document.querySelector("#confirmar").onclick =
+      () => registrarPagamento(conta);
+
+    document.querySelector("#voltar").onclick =
+      carregarContasAguardando;
+  }
+
+  async function registrarPagamento(conta) {
+    const forma = document.querySelector("#forma").value;
+    const valor = Number(document.querySelector("#valor").value);
+    const recebido = forma === "dinheiro"
+      ? Number(document.querySelector("#recebido").value)
+      : null;
+
+    if (!Number.isFinite(valor) || valor <= 0) {
+      mensagem("Informe um valor de pagamento válido.");
+      return;
+    }
+
+    if (
+      forma === "dinheiro" &&
+      (!Number.isFinite(recebido) || recebido < valor)
+    ) {
+      mensagem("O valor recebido precisa ser igual ou maior que o pagamento.");
+      return;
+    }
+
+    const { data, error } = await supabase.rpc(
+      "registrar_pagamento",
+      {
+        p_pedido_id: conta.pedido_id,
+        p_forma_pagamento: forma,
+        p_valor: valor,
+        p_valor_recebido: recebido
+      }
+    );
+
+    if (error) {
+      erro(
+        "Não foi possível registrar o pagamento. Confira se existe um caixa aberto para este operador.",
+        error
+      );
+      return;
+    }
+
+    if (data && typeof data === "object" && data.troco !== undefined) {
+      mensagem("Pagamento registrado. Troco: " + dinheiro(data.troco));
+    } else {
+      mensagem("Pagamento registrado com sucesso!");
+    }
+
+    await carregarDadosMesas();
+    await carregarContasAguardando();
+  }
+
+  // =====================================================
+  // ATUALIZAÇÃO EM TEMPO REAL
+  // =====================================================
+
+  function iniciarRealtime() {
+    if (canalRealtime) {
+      supabase.removeChannel(canalRealtime);
+    }
+
+    canalRealtime = supabase
+      .channel("ligeirinho-atualizacoes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "mesas" },
+        atualizarDepoisDeMudanca
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "pedidos" },
+        atualizarDepoisDeMudanca
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "itens_pedido" },
+        atualizarDepoisDeMudanca
+      )
+      .subscribe();
+  }
+
+  let atualizacaoEmAndamento = false;
+
+  async function atualizarDepoisDeMudanca() {
+    if (atualizacaoEmAndamento || !usuarioAtual) return;
+
+    atualizacaoEmAndamento = true;
+
+    try {
+      await carregarDadosMesas();
+
+      if (mesaAtual && pedidoAtual) {
+        const pedidoAtualizado = pedidoDaMesa(mesaAtual.id);
+
+        if (!pedidoAtualizado) {
+          pedidoAtual = null;
+          itensAtuais = [];
+          mensagem("O pedido desta mesa foi encerrado ou alterado.");
+          mostrarMesas();
+        } else {
+          pedidoAtual = pedidoAtualizado;
+          await carregarItensPedido();
+
+          if (document.querySelector("#lista")) {
+            atualizarListaItens();
+          }
+        }
+      } else if (document.querySelector("#mesas")) {
+        mostrarMesas();
+      } else if (document.querySelector("#listaContas")) {
+        carregarContasAguardando();
+      }
+    } catch (e) {
+      console.error("Erro na atualização em tempo real:", e);
+    } finally {
+      atualizacaoEmAndamento = false;
+    }
   }
 
   // =====================================================
   // INICIALIZAÇÃO
   // =====================================================
 
-  const { data: sessao } = await supabase.auth.getSession();
+  const { data: sessao, error: erroSessao } =
+    await supabase.auth.getSession();
+
+  if (erroSessao) {
+    erro("Erro ao verificar sessão.", erroSessao);
+    mostrarLogin();
+    return;
+  }
 
   if (sessao.session) {
-    await verificarAdministrador();
+    await verificarUsuario();
   } else {
     mostrarLogin();
   }
