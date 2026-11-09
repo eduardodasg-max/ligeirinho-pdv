@@ -1,3 +1,4 @@
+```javascript
 /* =====================================================
    LIGEIRINHO PDV
    Reconstrução da aplicação
@@ -10,6 +11,7 @@
 
   const SUPABASE_URL = "https://ewfxcsaxxsqixtmxruxz.supabase.co";
   const SUPABASE_KEY = "sb_publishable_1Cch1EDl59lNQFUiUIkmBQ_BXHuYjly";
+  const URL_RECUPERACAO = "https://eduardodasg-max.github.io/ligeirinho-pdv/";
 
   let supabase;
   let painel;
@@ -19,6 +21,7 @@
   let mesas = [];
   let pedidoAtual = null;
   let canalRealtime = null;
+  let aguardandoRedefinicao = false;
 
   const dinheiro = valor =>
     Number(valor || 0).toLocaleString("pt-BR", {
@@ -71,12 +74,22 @@
         SUPABASE_KEY
       );
 
+      // Detecta quando o usuário retorna pelo link de recuperação.
+      supabase.auth.onAuthStateChange(async (evento, sessao) => {
+        if (evento === "PASSWORD_RECOVERY") {
+          aguardandoRedefinicao = true;
+          mostrarRedefinirSenha();
+        }
+      });
+
       const { data, error } = await supabase.auth.getSession();
 
       if (error) throw error;
 
       if (data.session) {
-        await verificarUsuario();
+        if (!aguardandoRedefinicao) {
+          await verificarUsuario();
+        }
       } else {
         mostrarLogin();
       }
@@ -93,6 +106,7 @@
 
     painel.innerHTML = `
       <h2>Acesso ao Ligeirinho</h2>
+
       <label for="email">E-mail</label>
       <input id="email" type="email" autocomplete="username"
         placeholder="Seu e-mail">
@@ -102,10 +116,19 @@
         autocomplete="current-password" placeholder="Sua senha">
 
       <button id="entrar">Entrar</button>
+
+      <p>
+        <a href="#" id="esqueciSenha">Esqueci minha senha</a>
+      </p>
+
       <p id="mensagemLogin"></p>
     `;
 
     document.querySelector("#entrar").onclick = entrar;
+    document.querySelector("#esqueciSenha").onclick = evento => {
+      evento.preventDefault();
+      solicitarRecuperacaoSenha();
+    };
 
     document.querySelector("#senha").addEventListener("keydown", evento => {
       if (evento.key === "Enter") entrar();
@@ -140,6 +163,136 @@
       botao.disabled = false;
       botao.textContent = "Entrar";
       aviso.textContent = erro.message || "Falha no acesso.";
+    }
+  }
+
+  // RECUPERAÇÃO DE SENHA
+
+  async function solicitarRecuperacaoSenha() {
+    const campoEmail = document.querySelector("#email");
+    const aviso = document.querySelector("#mensagemLogin");
+
+    let email = campoEmail?.value.trim() || "";
+
+    if (!email) {
+      email = prompt("Informe o e-mail cadastrado no Ligeirinho:");
+
+      if (!email) {
+        aviso.textContent = "Informe um e-mail para recuperar a senha.";
+        return;
+      }
+
+      email = email.trim();
+
+      if (campoEmail) {
+        campoEmail.value = email;
+      }
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      aviso.textContent = "Informe um endereço de e-mail válido.";
+      return;
+    }
+
+    const botao = document.querySelector("#esqueciSenha");
+
+    if (botao) {
+      botao.style.pointerEvents = "none";
+      botao.textContent = "Enviando...";
+    }
+
+    aviso.textContent = "";
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: URL_RECUPERACAO
+      });
+
+      if (error) throw error;
+
+      aviso.textContent =
+        "Se o e-mail estiver cadastrado, você receberá um link para redefinir sua senha. Confira também a caixa de spam.";
+    } catch (erro) {
+      console.error("Erro ao solicitar recuperação:", erro);
+      aviso.textContent =
+        "Não foi possível solicitar a recuperação: " +
+        (erro.message || "tente novamente mais tarde.");
+    } finally {
+      if (botao) {
+        botao.style.pointerEvents = "";
+        botao.textContent = "Esqueci minha senha";
+      }
+    }
+  }
+
+  function mostrarRedefinirSenha() {
+    limpar();
+
+    painel.innerHTML = `
+      <h2>Redefinir senha</h2>
+      <p>Digite sua nova senha abaixo.</p>
+
+      <label for="novaSenha">Nova senha</label>
+      <input id="novaSenha" type="password"
+        autocomplete="new-password" placeholder="Nova senha">
+
+      <label for="confirmarSenha">Confirme a nova senha</label>
+      <input id="confirmarSenha" type="password"
+        autocomplete="new-password" placeholder="Repita a nova senha">
+
+      <button id="salvarNovaSenha">Salvar nova senha</button>
+      <p id="mensagemRedefinicao"></p>
+    `;
+
+    document.querySelector("#salvarNovaSenha").onclick =
+      salvarNovaSenha;
+  }
+
+  async function salvarNovaSenha() {
+    const senha = document.querySelector("#novaSenha").value;
+    const confirmacao = document.querySelector("#confirmarSenha").value;
+    const botao = document.querySelector("#salvarNovaSenha");
+    const aviso = document.querySelector("#mensagemRedefinicao");
+
+    if (!senha || !confirmacao) {
+      aviso.textContent = "Preencha os dois campos.";
+      return;
+    }
+
+    if (senha.length < 6) {
+      aviso.textContent = "A senha deve ter pelo menos 6 caracteres.";
+      return;
+    }
+
+    if (senha !== confirmacao) {
+      aviso.textContent = "As senhas não são iguais.";
+      return;
+    }
+
+    botao.disabled = true;
+    botao.textContent = "Salvando...";
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: senha
+      });
+
+      if (error) throw error;
+
+      aguardandoRedefinicao = false;
+
+      await supabase.auth.signOut();
+
+      mensagem("Senha alterada com sucesso. Entre com sua nova senha.");
+
+      mostrarLogin();
+    } catch (erro) {
+      console.error("Erro ao redefinir senha:", erro);
+      aviso.textContent =
+        "Não foi possível alterar a senha: " +
+        (erro.message || "tente novamente.");
+      botao.disabled = false;
+      botao.textContent = "Salvar nova senha";
     }
   }
 
@@ -232,6 +385,7 @@
     pedidoAtual = null;
     produtos = [];
     mesas = [];
+    aguardandoRedefinicao = false;
 
     mostrarLogin();
   }
@@ -628,162 +782,4 @@
       .eq("id", pedidoAtual.id)
       .single();
 
-    if (error) throw error;
-
-    pedidoAtual = data;
-    await carregarItensPedido();
-    await carregarMesas();
-
-    const mesa = mesas.find(m => m.id === pedidoAtual.mesa_id);
-    mostrarPedido(mesa);
-  }
-
-  async function solicitarFechamento() {
-    if (!confirm("Solicitar fechamento desta conta?")) return;
-
-    try {
-      const { error } = await supabase.rpc(
-        "solicitar_fechamento_conta",
-        { p_pedido_id: pedidoAtual.id }
-      );
-
-      if (error) throw error;
-
-      pedidoAtual = null;
-      await carregarMesas();
-      mostrarMesas();
-      mensagem("Conta encaminhada para o caixa.");
-    } catch (erro) {
-      mostrarErro("Não foi possível solicitar o fechamento.", erro);
-    }
-  }
-
-  // CONTAS E PAGAMENTOS
-
-  async function carregarContasAguardando() {
-    limpar();
-
-    painel.innerHTML = `
-      <h2>Contas aguardando pagamento</h2>
-      <p>Carregando...</p>
-      <button id="voltar">Voltar</button>
-      <div id="listaContas"></div>
-    `;
-
-    document.querySelector("#voltar").onclick = mostrarInicio;
-
-    try {
-      const { data, error } = await supabase.rpc(
-        "listar_contas_aguardando_pagamento"
-      );
-
-      if (error) throw error;
-
-      const lista = document.querySelector("#listaContas");
-      lista.innerHTML = "";
-
-      if (!data?.length) {
-        lista.textContent = "Nenhuma conta aguardando pagamento.";
-        return;
-      }
-
-      data.forEach(conta => {
-        const linha = document.createElement("div");
-        linha.className = "item-pedido";
-
-        const texto = document.createElement("span");
-        texto.textContent =
-          `Mesa ${conta.numero_mesa ?? conta.mesa_numero ?? "?"} — ${dinheiro(conta.valor_total)}`;
-
-        const pagar = document.createElement("button");
-        pagar.textContent = "Registrar pagamento";
-        pagar.onclick = () => registrarPagamento(conta);
-
-        linha.append(texto, pagar);
-        lista.appendChild(linha);
-      });
-
-    } catch (erro) {
-      mostrarErro("Erro ao carregar contas.", erro);
-    }
-  }
-
-  async function registrarPagamento(conta) {
-    const forma = prompt("Forma de pagamento: dinheiro, pix, debito ou credito");
-    if (!forma) return;
-
-    const valor = Number(prompt("Valor pago (use ponto para centavos):"));
-    if (!Number.isFinite(valor) || valor <= 0) {
-      mensagem("Valor inválido.");
-      return;
-    }
-
-    let recebido = null;
-
-    if (forma.toLowerCase() === "dinheiro") {
-      recebido = Number(prompt("Valor recebido:"));
-      if (!Number.isFinite(recebido) || recebido < valor) {
-        mensagem("Valor recebido inválido.");
-        return;
-      }
-    }
-
-    try {
-      const { error } = await supabase.rpc("registrar_pagamento", {
-        p_pedido_id: conta.pedido_id,
-        p_forma_pagamento: forma.toLowerCase(),
-        p_valor: valor,
-        p_valor_recebido: recebido
-      });
-
-      if (error) throw error;
-
-      mensagem("Pagamento registrado.");
-      await carregarContasAguardando();
-      await carregarMesas();
-
-    } catch (erro) {
-      mostrarErro("Não foi possível registrar o pagamento.", erro);
-    }
-  }
-
-  // ATUALIZAÇÃO EM TEMPO REAL
-
-  function iniciarRealtime() {
-    if (canalRealtime) {
-      supabase.removeChannel(canalRealtime);
-    }
-
-    canalRealtime = supabase
-      .channel("ligeirinho-atualizacoes")
-      .on("postgres_changes", {
-        event: "*",
-        schema: "public",
-        table: "mesas"
-      }, atualizarMesasRealtime)
-      .on("postgres_changes", {
-        event: "*",
-        schema: "public",
-        table: "pedidos"
-      }, atualizarMesasRealtime)
-      .on("postgres_changes", {
-        event: "*",
-        schema: "public",
-        table: "itens_pedido"
-      }, atualizarMesasRealtime)
-      .subscribe();
-  }
-
-  async function atualizarMesasRealtime() {
-    try {
-      await carregarMesas();
-
-      if (document.querySelector("#gradeMesas")) {
-        mostrarMesas();
-      }
-    } catch (erro) {
-      console.error("Erro na atualização em tempo real:", erro);
-    }
-  }
-
-})();
+    if
