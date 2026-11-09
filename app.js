@@ -2,6 +2,7 @@
 /* =====================================================
    LIGEIRINHO PDV
    Supabase + Produtos + Mesas + Pedidos + Realtime
+   + Recuperação de senha
    ===================================================== */
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -9,6 +10,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const SUPABASE_URL = "https://ewfxcsaxxsqixtmxruxz.supabase.co";
   const SUPABASE_KEY = "sb_publishable_1Cch1EDl59lNQFUiUIkmBQ_BXHuYjly";
+  const URL_RECUPERACAO =
+    "https://eduardodasg-max.github.io/ligeirinho-pdv/";
 
   if (!window.supabase || !painel) {
     alert("Não foi possível iniciar o Ligeirinho.");
@@ -30,6 +33,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   let itensAtuais = [];
   let canalRealtime = null;
   let atualizacaoEmAndamento = false;
+  let modoRecuperacao = false;
 
   const dinheiro = valor =>
     Number(valor || 0).toLocaleString("pt-BR", {
@@ -81,9 +85,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       <input id="senha" type="password" placeholder="Sua senha">
 
       <button id="entrar">Entrar</button>
+
+      <p>
+        <a href="#" id="esqueciSenha">Esqueci minha senha</a>
+      </p>
     `;
 
     document.querySelector("#entrar").onclick = entrar;
+
+    document.querySelector("#esqueciSenha").onclick = evento => {
+      evento.preventDefault();
+      mostrarRecuperacaoSenha();
+    };
   }
 
   async function entrar() {
@@ -112,6 +125,156 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     await verificarUsuario();
+  }
+
+  // =====================================================
+  // RECUPERAÇÃO DE SENHA
+  // =====================================================
+
+  function mostrarRecuperacaoSenha() {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Recuperar senha</h2>
+
+      <p>
+        Informe o e-mail cadastrado no Ligeirinho.
+        Você receberá um link para criar uma nova senha.
+      </p>
+
+      <label>E-mail</label>
+      <input
+        id="emailRecuperacao"
+        type="email"
+        placeholder="Seu e-mail"
+      >
+
+      <button id="enviarRecuperacao">
+        Enviar link de recuperação
+      </button>
+
+      <button id="voltarLogin">
+        Voltar ao login
+      </button>
+    `;
+
+    document.querySelector("#enviarRecuperacao").onclick =
+      enviarEmailRecuperacao;
+
+    document.querySelector("#voltarLogin").onclick = mostrarLogin;
+  }
+
+  async function enviarEmailRecuperacao() {
+    const email = document
+      .querySelector("#emailRecuperacao")
+      .value.trim();
+
+    if (!email) {
+      mensagem("Informe seu e-mail.");
+      return;
+    }
+
+    const botao = document.querySelector("#enviarRecuperacao");
+    botao.disabled = true;
+    botao.textContent = "Enviando...";
+
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      email,
+      {
+        redirectTo: URL_RECUPERACAO
+      }
+    );
+
+    if (error) {
+      botao.disabled = false;
+      botao.textContent = "Enviar link de recuperação";
+      erro("Não foi possível enviar o e-mail de recuperação.", error);
+      return;
+    }
+
+    mensagem(
+      "Se o e-mail estiver cadastrado, você receberá um link para redefinir sua senha. Confira também a caixa de spam."
+    );
+
+    mostrarLogin();
+  }
+
+  function mostrarNovaSenha() {
+    modoRecuperacao = true;
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Criar nova senha</h2>
+
+      <p>Digite sua nova senha e confirme abaixo.</p>
+
+      <label>Nova senha</label>
+      <input
+        id="novaSenha"
+        type="password"
+        placeholder="Digite a nova senha"
+      >
+
+      <label>Confirmar nova senha</label>
+      <input
+        id="confirmarSenha"
+        type="password"
+        placeholder="Digite novamente a nova senha"
+      >
+
+      <button id="salvarNovaSenha">
+        Salvar nova senha
+      </button>
+    `;
+
+    document.querySelector("#salvarNovaSenha").onclick =
+      salvarNovaSenha;
+  }
+
+  async function salvarNovaSenha() {
+    const senha = document.querySelector("#novaSenha").value;
+    const confirmar = document.querySelector("#confirmarSenha").value;
+
+    if (!senha || !confirmar) {
+      mensagem("Preencha os dois campos de senha.");
+      return;
+    }
+
+    if (senha.length < 6) {
+      mensagem("A senha deve ter pelo menos 6 caracteres.");
+      return;
+    }
+
+    if (senha !== confirmar) {
+      mensagem("As senhas não são iguais.");
+      return;
+    }
+
+    const botao = document.querySelector("#salvarNovaSenha");
+    botao.disabled = true;
+    botao.textContent = "Salvando...";
+
+    const { error } = await supabase.auth.updateUser({
+      password: senha
+    });
+
+    if (error) {
+      botao.disabled = false;
+      botao.textContent = "Salvar nova senha";
+      erro("Não foi possível alterar a senha.", error);
+      return;
+    }
+
+    mensagem("Senha alterada com sucesso! Faça login com sua nova senha.");
+
+    modoRecuperacao = false;
+
+    await supabase.auth.signOut();
+
+    usuarioAtual = null;
+    perfilAtual = null;
+
+    mostrarLogin();
   }
 
   // =====================================================
@@ -1020,6 +1183,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // =====================================================
+  // EVENTO DE RECUPERAÇÃO DO SUPABASE
+  // =====================================================
+
+  supabase.auth.onAuthStateChange((evento) => {
+    if (evento === "PASSWORD_RECOVERY") {
+      modoRecuperacao = true;
+      mostrarNovaSenha();
+    }
+  });
+
+  // =====================================================
   // INICIALIZAÇÃO
   // =====================================================
 
@@ -1029,6 +1203,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (erroSessao) {
     erro("Erro ao verificar sessão.", erroSessao);
     mostrarLogin();
+    return;
+  }
+
+  const linkEhRecuperacao =
+    window.location.hash.includes("type=recovery");
+
+  if (linkEhRecuperacao || modoRecuperacao) {
+    mostrarNovaSenha();
     return;
   }
 
