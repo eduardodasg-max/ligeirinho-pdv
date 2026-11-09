@@ -2,7 +2,7 @@
 /* =====================================================
    LIGEIRINHO PDV
    Supabase + Produtos + Mesas + Pedidos + Realtime
-   + Recuperação de senha + Abertura de caixa
+   + Recuperação de senha + Abertura e fechamento de caixa
    ===================================================== */
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -351,6 +351,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? '<button id="botaoAbrirCaixa">Abrir caixa</button>'
         : ""}
 
+      ${temPermissao("administrador", "caixa")
+        ? '<button id="botaoFecharCaixa">Fechar caixa</button>'
+        : ""}
+
       ${temPermissao("administrador")
         ? '<button id="botaoProdutos">Produtos</button>'
         : ""}
@@ -368,6 +372,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (temPermissao("administrador", "caixa")) {
       document.querySelector("#botaoAbrirCaixa").onclick =
         mostrarAberturaCaixa;
+
+      document.querySelector("#botaoFecharCaixa").onclick =
+        mostrarFechamentoCaixa;
     }
 
     if (temPermissao("administrador")) {
@@ -453,6 +460,310 @@ document.addEventListener("DOMContentLoaded", async () => {
     console.log("Caixa aberto:", data);
 
     mensagem("Caixa aberto com sucesso!");
+
+    mostrarInicio();
+  }
+
+  // =====================================================
+  // FECHAMENTO DO CAIXA
+  // =====================================================
+
+  async function mostrarFechamentoCaixa() {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para fechar caixa.");
+      return;
+    }
+
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Fechar caixa</h2>
+      <p>Carregando caixas abertos...</p>
+      <button id="voltarFechamento">Voltar</button>
+    `;
+
+    document.querySelector("#voltarFechamento").onclick = mostrarInicio;
+
+    let consulta = supabase
+      .from("caixas")
+      .select("id, operador_id, valor_inicial, valor_esperado, aberto_em, status")
+      .eq("status", "aberto")
+      .order("aberto_em", { ascending: true });
+
+    if (temPermissao("caixa") && !temPermissao("administrador")) {
+      consulta = consulta.eq("operador_id", usuarioAtual.id);
+    }
+
+    const { data: caixas, error } = await consulta;
+
+    if (error) {
+      erro("Não foi possível consultar os caixas abertos.", error);
+      mostrarInicio();
+      return;
+    }
+
+    if (!caixas || caixas.length === 0) {
+      limparPainel();
+
+      painel.innerHTML = `
+        <h2>Fechar caixa</h2>
+        <p>Não há caixa aberto disponível para você.</p>
+        <button id="voltarFechamento">Voltar</button>
+      `;
+
+      document.querySelector("#voltarFechamento").onclick = mostrarInicio;
+      return;
+    }
+
+    const idsOperadores = [
+      ...new Set(caixas.map(c => c.operador_id).filter(Boolean))
+    ];
+
+    const nomesOperadores = {};
+
+    if (idsOperadores.length > 0) {
+      const { data: perfis, error: erroPerfis } = await supabase
+        .from("perfis_usuarios")
+        .select("id, nome")
+        .in("id", idsOperadores);
+
+      if (erroPerfis) {
+        erro("Não foi possível identificar os operadores dos caixas.", erroPerfis);
+        mostrarInicio();
+        return;
+      }
+
+      (perfis || []).forEach(perfil => {
+        nomesOperadores[perfil.id] = perfil.nome;
+      });
+    }
+
+    mostrarSelecaoCaixa(caixas, nomesOperadores);
+  }
+
+  function mostrarSelecaoCaixa(caixas, nomesOperadores) {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Selecionar caixa aberto</h2>
+      <p>Escolha o caixa que deseja conferir.</p>
+      <div id="listaCaixasAbertos"></div>
+      <button id="voltarFechamento">Voltar</button>
+    `;
+
+    const lista = document.querySelector("#listaCaixasAbertos");
+
+    caixas.forEach(caixa => {
+      const botao = document.createElement("button");
+
+      botao.type = "button";
+      botao.className = "item-pedido";
+      botao.style.display = "block";
+      botao.style.width = "100%";
+      botao.style.marginBottom = "10px";
+
+      const operador =
+        nomesOperadores[caixa.operador_id] || "Operador";
+
+      const abertura = caixa.aberto_em
+        ? new Date(caixa.aberto_em).toLocaleString("pt-BR")
+        : "Horário não informado";
+
+      botao.textContent =
+        `${operador} | Inicial: ${dinheiro(caixa.valor_inicial)} | ` +
+        `Esperado: ${dinheiro(caixa.valor_esperado)} | ` +
+        `Abertura: ${abertura}`;
+
+      botao.onclick = () => {
+        mostrarConferenciaCaixa(
+          caixa,
+          operador,
+          caixas,
+          nomesOperadores
+        );
+      };
+
+      lista.appendChild(botao);
+    });
+
+    document.querySelector("#voltarFechamento").onclick = mostrarInicio;
+  }
+
+  function mostrarConferenciaCaixa(
+    caixa,
+    operador,
+    caixas,
+    nomesOperadores
+  ) {
+    limparPainel();
+
+    const esperado = Number(caixa.valor_esperado || 0);
+
+    painel.innerHTML = `
+      <h2>Conferência do caixa</h2>
+
+      <p>
+        <strong>Operador que abriu:</strong>
+        ${escapar(operador)}
+      </p>
+
+      <p>
+        <strong>Valor inicial:</strong>
+        ${dinheiro(caixa.valor_inicial)}
+      </p>
+
+      <p>
+        <strong>Valor esperado:</strong>
+        ${dinheiro(esperado)}
+      </p>
+
+      <label>Valor contado</label>
+      <input
+        id="valorContadoCaixa"
+        type="number"
+        min="0"
+        step="0.01"
+        placeholder="Informe o dinheiro contado"
+      >
+
+      <label>Justificativa da diferença (se houver)</label>
+      <textarea
+        id="justificativaFechamento"
+        rows="3"
+        placeholder="Explique a diferença, se houver"
+      ></textarea>
+
+      <p id="previaDiferenca"></p>
+
+      <button id="confirmarFechamentoCaixa">
+        Confirmar fechamento
+      </button>
+
+      <button id="voltarSelecaoCaixa">
+        Voltar à lista
+      </button>
+    `;
+
+    const campoContado =
+      document.querySelector("#valorContadoCaixa");
+
+    const campoJustificativa =
+      document.querySelector("#justificativaFechamento");
+
+    const previa = document.querySelector("#previaDiferenca");
+
+    campoContado.oninput = () => {
+      if (campoContado.value === "") {
+        previa.textContent = "";
+        return;
+      }
+
+      const contado = Number(campoContado.value);
+
+      if (!Number.isFinite(contado) || contado < 0) {
+        previa.textContent = "Informe um valor válido.";
+        return;
+      }
+
+      const diferenca = contado - esperado;
+
+      previa.textContent =
+        "Diferença: " + dinheiro(diferenca);
+
+      if (diferenca !== 0) {
+        previa.textContent +=
+          " — será necessário informar uma justificativa.";
+      }
+    };
+
+    document.querySelector("#confirmarFechamentoCaixa").onclick =
+      () => confirmarFechamentoCaixa(caixa, esperado);
+
+    document.querySelector("#voltarSelecaoCaixa").onclick =
+      () => mostrarSelecaoCaixa(caixas, nomesOperadores);
+  }
+
+  async function confirmarFechamentoCaixa(caixa, esperado) {
+    const campoContado =
+      document.querySelector("#valorContadoCaixa");
+
+    const campoJustificativa =
+      document.querySelector("#justificativaFechamento");
+
+    const valorDigitado = campoContado.value.trim();
+    const valorContado = Number(valorDigitado);
+    const justificativa = campoJustificativa.value.trim();
+
+    if (
+      valorDigitado === "" ||
+      !Number.isFinite(valorContado) ||
+      valorContado < 0
+    ) {
+      mensagem(
+        "Informe um valor contado válido, igual ou maior que zero."
+      );
+      return;
+    }
+
+    const diferenca = valorContado - esperado;
+
+    if (diferenca !== 0 && !justificativa) {
+      mensagem(
+        "Informe uma justificativa para a diferença do caixa."
+      );
+
+      campoJustificativa.focus();
+      return;
+    }
+
+    const confirmou = confirm(
+      "Confirma o fechamento deste caixa?\n\n" +
+      "Valor esperado: " + dinheiro(esperado) + "\n" +
+      "Valor contado: " + dinheiro(valorContado) + "\n" +
+      "Diferença: " + dinheiro(diferenca)
+    );
+
+    if (!confirmou) {
+      return;
+    }
+
+    const botao =
+      document.querySelector("#confirmarFechamentoCaixa");
+
+    botao.disabled = true;
+    botao.textContent = "Fechando caixa...";
+
+    const { data, error } = await supabase.rpc("fechar_caixa", {
+      p_valor_contado: valorContado,
+      p_justificativa: justificativa || null,
+      p_caixa_id: caixa.id
+    });
+
+    if (error) {
+      botao.disabled = false;
+      botao.textContent = "Confirmar fechamento";
+
+      erro("Não foi possível fechar o caixa.", error);
+      return;
+    }
+
+    const resultado = Array.isArray(data) ? data[0] : data;
+
+    if (!resultado) {
+      mensagem(
+        "A função foi executada, mas não retornou os dados do fechamento. Confira o relatório do caixa."
+      );
+
+      mostrarInicio();
+      return;
+    }
+
+    mensagem(
+      "Caixa fechado com sucesso!\n\n" +
+      "Valor esperado: " + dinheiro(resultado.valor_esperado) + "\n" +
+      "Valor contado: " + dinheiro(resultado.valor_contado) + "\n" +
+      "Diferença: " + dinheiro(resultado.diferenca)
+    );
 
     mostrarInicio();
   }
