@@ -35,6 +35,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   let atualizacaoEmAndamento = false;
   let modoRecuperacao = false;
 
+  const categoriasProduto = [
+    { valor: "comida", texto: "Comida" },
+    { valor: "bebida", texto: "Bebida" },
+    { valor: "petisco", texto: "Petiscos" },
+    { valor: "drink", texto: "Drinks" },
+    { valor: "bebida sem alcool", texto: "Bebidas sem álcool" }
+  ];
+
   const dinheiro = valor =>
     Number(valor || 0).toLocaleString("pt-BR", {
       style: "currency",
@@ -485,11 +493,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       <label>Categoria</label>
       <select id="categoria">
         <option value="">Selecione</option>
-        <option>Comida</option>
-        <option>Bebida</option>
-        <option>Petiscos</option>
-        <option>Drinks</option>
-        <option>Bebidas sem álcool</option>
+        ${categoriasProduto.map(categoria => `
+          <option value="${escapar(categoria.valor)}">
+            ${escapar(categoria.texto)}
+          </option>
+        `).join("")}
       </select>
 
       <label>Preço de venda</label>
@@ -537,6 +545,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    if (!categoriasProduto.some(item => item.valor === categoria)) {
+      mensagem("Selecione uma categoria válida.");
+      return;
+    }
+
     if ([preco, custo, estoque, estoqueMinimo].some(
       valor => !Number.isFinite(valor) || valor < 0
     )) {
@@ -555,6 +568,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       ativo: true
     };
 
+    const botao = document.querySelector("#salvarProduto");
+    botao.disabled = true;
+    botao.textContent = "Salvando...";
+
     let resultado;
 
     if (id) {
@@ -569,6 +586,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (resultado.error) {
+      botao.disabled = false;
+      botao.textContent = "Salvar produto";
       erro("Erro ao salvar produto.", resultado.error);
       return;
     }
