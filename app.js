@@ -3,7 +3,7 @@
    LIGEIRINHO PDV
    Supabase + Produtos + Mesas + Pedidos + Realtime
    + Recuperação de senha + Abertura e fechamento de caixa
-   + Histórico de caixa
+   + Histórico de caixa + Relatório de faturamento
    ===================================================== */
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -75,6 +75,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function voltarInicio() {
     mostrarInicio();
+  }
+
+  function dataLocalISO(data = new Date()) {
+    const ano = data.getFullYear();
+    const mes = String(data.getMonth() + 1).padStart(2, "0");
+    const dia = String(data.getDate()).padStart(2, "0");
+
+    return `${ano}-${mes}-${dia}`;
   }
 
   // =====================================================
@@ -361,6 +369,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         : ""}
 
       ${temPermissao("administrador")
+        ? '<button id="botaoRelatorios">Relatórios</button>'
+        : ""}
+
+      ${temPermissao("administrador")
         ? '<button id="botaoProdutos">Produtos</button>'
         : ""}
 
@@ -386,6 +398,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (temPermissao("administrador")) {
+      document.querySelector("#botaoRelatorios").onclick =
+        mostrarRelatorios;
+
       document.querySelector("#botaoProdutos").onclick = carregarProdutos;
     }
 
@@ -401,6 +416,298 @@ document.addEventListener("DOMContentLoaded", async () => {
     };
 
     document.querySelector("#sair").onclick = sair;
+  }
+
+  // =====================================================
+  // RELATÓRIO DE FATURAMENTO
+  // =====================================================
+
+  function mostrarRelatorios() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode acessar os relatórios.");
+      mostrarInicio();
+      return;
+    }
+
+    limparPainel();
+
+    const hoje = new Date();
+    const dataHoje = dataLocalISO(hoje);
+    const mesAtual = dataHoje.slice(0, 7);
+
+    painel.innerHTML = `
+      <h2>Relatório de faturamento</h2>
+
+      <label>Período do relatório</label>
+      <select id="relatorioPeriodo">
+        <option value="mes">Mês atual</option>
+        <option value="dia">Um dia</option>
+        <option value="ano">Um ano</option>
+        <option value="personalizado">Período personalizado</option>
+        <option value="todos">Todo o histórico</option>
+      </select>
+
+      <div id="filtroRelatorioDia" style="display:none;">
+        <label>Data</label>
+        <input id="relatorioDia" type="date">
+      </div>
+
+      <div id="filtroRelatorioMes" style="display:none;">
+        <label>Mês</label>
+        <input id="relatorioMes" type="month">
+      </div>
+
+      <div id="filtroRelatorioAno" style="display:none;">
+        <label>Ano</label>
+        <input
+          id="relatorioAno"
+          type="number"
+          min="2000"
+          max="2100"
+          step="1"
+          placeholder="Ex.: 2026"
+        >
+      </div>
+
+      <div id="filtroRelatorioPersonalizado" style="display:none;">
+        <label>Data inicial</label>
+        <input id="relatorioDataInicio" type="date">
+
+        <label>Data final</label>
+        <input id="relatorioDataFim" type="date">
+      </div>
+
+      <button id="consultarRelatorio">Consultar relatório</button>
+
+      <div id="resultadoRelatorio">
+        <p>Selecione o período e consulte o faturamento.</p>
+      </div>
+
+      <button id="voltarRelatorios">Voltar</button>
+    `;
+
+    document.querySelector("#relatorioDia").value = dataHoje;
+    document.querySelector("#relatorioMes").value = mesAtual;
+    document.querySelector("#relatorioAno").value = hoje.getFullYear();
+
+    document.querySelector("#relatorioDataInicio").value =
+      `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
+
+    document.querySelector("#relatorioDataFim").value = dataHoje;
+
+    document.querySelector("#relatorioPeriodo").onchange =
+      atualizarCamposRelatorio;
+
+    document.querySelector("#consultarRelatorio").onclick =
+      carregarRelatorioFaturamento;
+
+    document.querySelector("#voltarRelatorios").onclick = mostrarInicio;
+
+    atualizarCamposRelatorio();
+
+    carregarRelatorioFaturamento();
+  }
+
+  function atualizarCamposRelatorio() {
+    const periodo =
+      document.querySelector("#relatorioPeriodo").value;
+
+    document.querySelector("#filtroRelatorioDia").style.display =
+      periodo === "dia" ? "block" : "none";
+
+    document.querySelector("#filtroRelatorioMes").style.display =
+      periodo === "mes" ? "block" : "none";
+
+    document.querySelector("#filtroRelatorioAno").style.display =
+      periodo === "ano" ? "block" : "none";
+
+    document.querySelector("#filtroRelatorioPersonalizado").style.display =
+      periodo === "personalizado" ? "block" : "none";
+  }
+
+  function obterDatasRelatorio() {
+    const periodo =
+      document.querySelector("#relatorioPeriodo").value;
+
+    let inicio = null;
+    let fim = null;
+
+    if (periodo === "dia") {
+      const dia = document.querySelector("#relatorioDia").value;
+
+      if (!dia) {
+        mensagem("Selecione uma data.");
+        return null;
+      }
+
+      inicio = dia;
+      fim = dia;
+    }
+
+    if (periodo === "mes") {
+      const mesSelecionado =
+        document.querySelector("#relatorioMes").value;
+
+      if (!/^\d{4}-\d{2}$/.test(mesSelecionado)) {
+        mensagem("Selecione um mês válido.");
+        return null;
+      }
+
+      const [ano, mes] = mesSelecionado.split("-").map(Number);
+
+      if (mes < 1 || mes > 12) {
+        mensagem("Selecione um mês válido.");
+        return null;
+      }
+
+      const ultimoDia = new Date(ano, mes, 0).getDate();
+
+      inicio =
+        `${ano}-${String(mes).padStart(2, "0")}-01`;
+
+      fim =
+        `${ano}-${String(mes).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
+    }
+
+    if (periodo === "ano") {
+      const ano = Number(
+        document.querySelector("#relatorioAno").value
+      );
+
+      if (
+        !Number.isInteger(ano) ||
+        ano < 2000 ||
+        ano > 2100
+      ) {
+        mensagem("Informe um ano válido entre 2000 e 2100.");
+        return null;
+      }
+
+      inicio = `${ano}-01-01`;
+      fim = `${ano}-12-31`;
+    }
+
+    if (periodo === "personalizado") {
+      inicio =
+        document.querySelector("#relatorioDataInicio").value;
+
+      fim =
+        document.querySelector("#relatorioDataFim").value;
+
+      if (!inicio || !fim || inicio > fim) {
+        mensagem("Confira as datas informadas.");
+        return null;
+      }
+    }
+
+    return { inicio, fim };
+  }
+
+  async function carregarRelatorioFaturamento() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode consultar o faturamento.");
+      mostrarInicio();
+      return;
+    }
+
+    const datas = obterDatasRelatorio();
+
+    if (!datas) return;
+
+    const resultado =
+      document.querySelector("#resultadoRelatorio");
+
+    const botao =
+      document.querySelector("#consultarRelatorio");
+
+    resultado.innerHTML = "<p>Consultando faturamento...</p>";
+
+    botao.disabled = true;
+    botao.textContent = "Consultando...";
+
+    const { data, error } = await supabase.rpc(
+      "relatorio_faturamento",
+      {
+        p_data_inicio: datas.inicio,
+        p_data_fim: datas.fim
+      }
+    );
+
+    botao.disabled = false;
+    botao.textContent = "Consultar relatório";
+
+    if (error) {
+      console.error("Erro no relatório de faturamento:", error);
+
+      resultado.innerHTML = `
+        <p>Não foi possível carregar o relatório.</p>
+        <p>${escapar(error.message || "Erro desconhecido.")}</p>
+      `;
+
+      return;
+    }
+
+    if (!data || typeof data !== "object") {
+      resultado.innerHTML =
+        "<p>O relatório não retornou dados válidos.</p>";
+      return;
+    }
+
+    mostrarResultadoRelatorio(data);
+  }
+
+  function mostrarResultadoRelatorio(data) {
+    if (!temPermissao("administrador")) {
+      mensagem("Acesso permitido somente ao administrador.");
+      mostrarInicio();
+      return;
+    }
+
+    const resultado =
+      document.querySelector("#resultadoRelatorio");
+
+    if (!resultado) return;
+
+    const total = Number(data.total_faturado || 0);
+    const vendas = Number(data.quantidade_vendas || 0);
+    const ticket = Number(data.ticket_medio || 0);
+
+    const formas = Array.isArray(data.formas_pagamento)
+      ? data.formas_pagamento
+      : [];
+
+    const linhasFormas = formas.length
+      ? formas.map(forma => `
+          <div class="item-pedido" style="display:block; margin-bottom:10px;">
+            <strong>${escapar(forma.forma_pagamento || "Não informado")}</strong>
+            <p>Quantidade: ${Number(forma.quantidade || 0)}</p>
+            <p>Total: ${dinheiro(forma.total)}</p>
+          </div>
+        `).join("")
+      : "<p>Nenhum pagamento encontrado neste período.</p>";
+
+    resultado.innerHTML = `
+      <h3>Resumo do faturamento</h3>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <p><strong>Faturamento total</strong></p>
+        <h2>${dinheiro(total)}</h2>
+      </div>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <p><strong>Quantidade de vendas</strong></p>
+        <h2>${vendas}</h2>
+      </div>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <p><strong>Ticket médio</strong></p>
+        <h2>${dinheiro(ticket)}</h2>
+      </div>
+
+      <h3>Faturamento por forma de pagamento</h3>
+
+      ${linhasFormas}
+    `;
   }
 
   // =====================================================
@@ -981,10 +1288,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       `)
       .order("aberto_em", { ascending: false });
 
-    // Só aplica o filtro de data quando o usuário escolhe
-    // mês, ano ou intervalo personalizado.
-    // "Todo o histórico" consulta todos os registros disponíveis.
-
     if (inicio && fim) {
       const inicioISO =
         new Date(inicio + "T00:00:00").toISOString();
@@ -1170,6 +1473,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function carregarProdutos() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode acessar os produtos.");
+      mostrarInicio();
+      return;
+    }
+
     limparPainel();
 
     painel.innerHTML = `
@@ -1182,6 +1491,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function mostrarListaProdutos() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode acessar os produtos.");
+      mostrarInicio();
+      return;
+    }
+
     limparPainel();
 
     painel.innerHTML = `
@@ -1229,6 +1544,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function mostrarFormularioProduto(produto = null) {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode cadastrar produtos.");
+      mostrarInicio();
+      return;
+    }
+
     const editando = Boolean(produto);
 
     limparPainel();
@@ -1284,6 +1605,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function salvarProduto(id) {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode salvar produtos.");
+      mostrarInicio();
+      return;
+    }
+
     const nome = document.querySelector("#nome").value.trim();
     const categoria = document.querySelector("#categoria").value;
     const preco = Number(document.querySelector("#preco").value);
@@ -1722,6 +2049,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // =====================================================
 
   async function carregarContasAguardando() {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para acessar as contas.");
+      mostrarInicio();
+      return;
+    }
+
     limparPainel();
 
     painel.innerHTML = `
@@ -1743,6 +2076,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function mostrarListaContas(contas) {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para acessar as contas.");
+      mostrarInicio();
+      return;
+    }
+
     limparPainel();
 
     painel.innerHTML = `
@@ -1794,6 +2133,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // =====================================================
 
   function mostrarPagamento(conta) {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para registrar pagamentos.");
+      mostrarInicio();
+      return;
+    }
+
     limparPainel();
 
     painel.innerHTML = `
