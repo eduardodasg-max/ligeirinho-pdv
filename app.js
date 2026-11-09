@@ -2,7 +2,7 @@
 /* =====================================================
    LIGEIRINHO PDV
    Supabase + Produtos + Mesas + Pedidos + Realtime
-   + Recuperação de senha
+   + Recuperação de senha + Abertura de caixa
    ===================================================== */
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -347,6 +347,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       <button id="botaoMesas">Controle de Mesas</button>
 
+      ${temPermissao("administrador", "caixa")
+        ? '<button id="botaoAbrirCaixa">Abrir caixa</button>'
+        : ""}
+
       ${temPermissao("administrador")
         ? '<button id="botaoProdutos">Produtos</button>'
         : ""}
@@ -360,6 +364,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     `;
 
     document.querySelector("#botaoMesas").onclick = mostrarMesas;
+
+    if (temPermissao("administrador", "caixa")) {
+      document.querySelector("#botaoAbrirCaixa").onclick =
+        mostrarAberturaCaixa;
+    }
 
     if (temPermissao("administrador")) {
       document.querySelector("#botaoProdutos").onclick = carregarProdutos;
@@ -377,6 +386,75 @@ document.addEventListener("DOMContentLoaded", async () => {
     };
 
     document.querySelector("#sair").onclick = sair;
+  }
+
+  // =====================================================
+  // ABERTURA DO CAIXA
+  // =====================================================
+
+  function mostrarAberturaCaixa() {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Abrir caixa</h2>
+
+      <p>Informe o valor inicial em dinheiro.</p>
+
+      <label>Valor inicial</label>
+      <input
+        id="valorInicialCaixa"
+        type="number"
+        min="0"
+        step="0.01"
+        value="0"
+      >
+
+      <button id="confirmarAberturaCaixa">
+        Abrir caixa
+      </button>
+
+      <button id="cancelarAberturaCaixa">
+        Voltar
+      </button>
+    `;
+
+    document.querySelector("#confirmarAberturaCaixa").onclick =
+      abrirCaixa;
+
+    document.querySelector("#cancelarAberturaCaixa").onclick =
+      mostrarInicio;
+  }
+
+  async function abrirCaixa() {
+    const campo = document.querySelector("#valorInicialCaixa");
+    const valor = Number(campo.value);
+
+    if (!Number.isFinite(valor) || valor < 0) {
+      mensagem("Informe um valor válido, igual ou maior que zero.");
+      return;
+    }
+
+    const botao = document.querySelector("#confirmarAberturaCaixa");
+
+    botao.disabled = true;
+    botao.textContent = "Abrindo...";
+
+    const { data, error } = await supabase.rpc("abrir_caixa", {
+      p_valor_inicial: valor
+    });
+
+    if (error) {
+      botao.disabled = false;
+      botao.textContent = "Abrir caixa";
+      erro("Não foi possível abrir o caixa.", error);
+      return;
+    }
+
+    console.log("Caixa aberto:", data);
+
+    mensagem("Caixa aberto com sucesso!");
+
+    mostrarInicio();
   }
 
   async function sair() {
@@ -704,8 +782,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // =====================================================
   // ABRIR MESA
-  // Administrador, caixa e garçom abrem em nome próprio.
-  // O Supabase identifica o usuário autenticado.
   // =====================================================
 
   async function abrirMesa(mesa) {
