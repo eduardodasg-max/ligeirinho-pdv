@@ -74,7 +74,6 @@ main {
   min-height: 65px;
   border: none;
   border-radius: 10px;
-  background: #123b63;
   color: white;
   font-size: 20px;
   font-weight: bold;
@@ -82,13 +81,42 @@ main {
   transition: 0.2s;
 }
 
-.mesa:hover {
-  background: #1d5689;
+/* MESA LIVRE: AZUL */
+
+.mesa.livre {
+  background: #1976d2;
+}
+
+.mesa.livre:hover {
+  background: #125ca8;
+  transform: translateY(-2px);
+}
+
+/* MESA OCUPADA: VERMELHO */
+
+.mesa.ocupada {
+  background: #d93636;
+}
+
+.mesa.ocupada:hover {
+  background: #b92727;
+  transform: translateY(-2px);
+}
+
+/* AGUARDANDO PAGAMENTO: AMARELO */
+
+.mesa.aguardando {
+  background: #f2c230;
+  color: #263238;
+}
+
+.mesa.aguardando:hover {
+  background: #dfad16;
   transform: translateY(-2px);
 }
 
 .mesa:active {
-  background: #d93636;
+  filter: brightness(0.9);
 }
 
 /* CAMPOS DO PEDIDO */
