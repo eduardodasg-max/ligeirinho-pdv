@@ -3,6 +3,7 @@
    LIGEIRINHO PDV
    Supabase + Produtos + Mesas + Pedidos + Realtime
    + Recuperação de senha + Abertura e fechamento de caixa
+   + Histórico de caixa
    ===================================================== */
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -355,6 +356,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? '<button id="botaoFecharCaixa">Fechar caixa</button>'
         : ""}
 
+      ${temPermissao("administrador", "caixa")
+        ? '<button id="botaoHistoricoCaixa">Histórico de caixa</button>'
+        : ""}
+
       ${temPermissao("administrador")
         ? '<button id="botaoProdutos">Produtos</button>'
         : ""}
@@ -375,6 +380,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       document.querySelector("#botaoFecharCaixa").onclick =
         mostrarFechamentoCaixa;
+
+      document.querySelector("#botaoHistoricoCaixa").onclick =
+        mostrarHistoricoCaixa;
     }
 
     if (temPermissao("administrador")) {
@@ -767,6 +775,248 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     mostrarInicio();
   }
+
+  // =====================================================
+  // HISTÓRICO DE CAIXA
+  // =====================================================
+
+  async function mostrarHistoricoCaixa() {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para consultar o histórico.");
+      return;
+    }
+
+    limparPainel();
+
+    const hoje = new Date();
+
+    const dataHoje = [
+      hoje.getFullYear(),
+      String(hoje.getMonth() + 1).padStart(2, "0"),
+      String(hoje.getDate()).padStart(2, "0")
+    ].join("-");
+
+    const primeiroDia = [
+      hoje.getFullYear(),
+      String(hoje.getMonth() + 1).padStart(2, "0"),
+      "01"
+    ].join("-");
+
+    painel.innerHTML = `
+      <h2>Histórico de caixa</h2>
+
+      <label>Data inicial</label>
+      <input id="historicoDataInicio" type="date">
+
+      <label>Data final</label>
+      <input id="historicoDataFim" type="date">
+
+      <label>Status</label>
+      <select id="historicoStatus">
+        <option value="todos">Todos</option>
+        <option value="aberto">Abertos</option>
+        <option value="fechado">Fechados</option>
+      </select>
+
+      <button id="buscarHistoricoCaixa">Consultar</button>
+
+      <div id="resumoHistoricoCaixa"></div>
+      <div id="listaHistoricoCaixa"></div>
+
+      <button id="voltarHistoricoCaixa">Voltar</button>
+    `;
+
+    document.querySelector("#historicoDataInicio").value = primeiroDia;
+    document.querySelector("#historicoDataFim").value = dataHoje;
+
+    document.querySelector("#buscarHistoricoCaixa").onclick =
+      carregarHistoricoCaixa;
+
+    document.querySelector("#voltarHistoricoCaixa").onclick =
+      mostrarInicio;
+
+    await carregarHistoricoCaixa();
+  }
+
+  async function carregarHistoricoCaixa() {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para consultar o histórico.");
+      mostrarInicio();
+      return;
+    }
+
+    const inicio = document.querySelector("#historicoDataInicio").value;
+    const fim = document.querySelector("#historicoDataFim").value;
+    const status = document.querySelector("#historicoStatus").value;
+
+    const lista = document.querySelector("#listaHistoricoCaixa");
+    const resumo = document.querySelector("#resumoHistoricoCaixa");
+
+    if (!inicio || !fim || inicio > fim) {
+      mensagem("Confira as datas informadas.");
+      return;
+    }
+
+    lista.textContent = "Consultando caixas...";
+    resumo.textContent = "";
+
+    const inicioISO = new Date(inicio + "T00:00:00").toISOString();
+
+    const fimISO = new Date(
+      new Date(fim + "T00:00:00").getTime() + 86400000
+    ).toISOString();
+
+    let consulta = supabase
+      .from("caixas")
+      .select(`
+        id,
+        operador_id,
+        fechado_por,
+        valor_inicial,
+        valor_esperado,
+        valor_contado,
+        diferenca,
+        status,
+        aberto_em,
+        fechado_em,
+        justificativa
+      `)
+      .gte("aberto_em", inicioISO)
+      .lt("aberto_em", fimISO)
+      .order("aberto_em", { ascending: false });
+
+    if (status !== "todos") {
+      consulta = consulta.eq("status", status);
+    }
+
+    if (
+      temPermissao("caixa") &&
+      !temPermissao("administrador")
+    ) {
+      consulta = consulta.eq("operador_id", usuarioAtual.id);
+    }
+
+    const { data: caixas, error } = await consulta;
+
+    if (error) {
+      lista.textContent = "Erro ao consultar o histórico.";
+      erro("Não foi possível carregar o histórico.", error);
+      return;
+    }
+
+    const registros = caixas || [];
+
+    const ids = [
+      ...new Set(
+        registros
+          .flatMap(c => [c.operador_id, c.fechado_por])
+          .filter(Boolean)
+      )
+    ];
+
+    const nomes = {};
+
+    if (ids.length) {
+      const { data: perfis, error: erroPerfis } = await supabase
+        .from("perfis_usuarios")
+        .select("id, nome")
+        .in("id", ids);
+
+      if (erroPerfis) {
+        erro("Erro ao consultar os operadores.", erroPerfis);
+        return;
+      }
+
+      (perfis || []).forEach(p => {
+        nomes[p.id] = p.nome;
+      });
+    }
+
+    const fechados = registros.filter(c => c.status === "fechado");
+
+    const totalContado = fechados.reduce(
+      (soma, c) => soma + Number(c.valor_contado || 0),
+      0
+    );
+
+    const diferencaTotal = fechados.reduce(
+      (soma, c) => soma + Number(c.diferenca || 0),
+      0
+    );
+
+    resumo.innerHTML = `
+      <p><strong>Caixas encontrados:</strong> ${registros.length}</p>
+      <p><strong>Total contado:</strong> ${dinheiro(totalContado)}</p>
+      <p><strong>Diferença acumulada:</strong> ${dinheiro(diferencaTotal)}</p>
+    `;
+
+    lista.innerHTML = "";
+
+    if (!registros.length) {
+      lista.textContent = "Nenhum caixa encontrado neste período.";
+      return;
+    }
+
+    registros.forEach(caixa => {
+      const card = document.createElement("div");
+      card.className = "item-pedido";
+      card.style.display = "block";
+      card.style.marginBottom = "12px";
+
+      const abertoPor =
+        nomes[caixa.operador_id] || "Operador";
+
+      const fechadoPor = caixa.fechado_por
+        ? nomes[caixa.fechado_por] || "Operador"
+        : "—";
+
+      const abertura = caixa.aberto_em
+        ? new Date(caixa.aberto_em).toLocaleString("pt-BR")
+        : "—";
+
+      const fechamento = caixa.fechado_em
+        ? new Date(caixa.fechado_em).toLocaleString("pt-BR")
+        : "Ainda aberto";
+
+      card.innerHTML = `
+        <h3>Caixa — ${escapar(caixa.status.toUpperCase())}</h3>
+
+        <p><strong>Aberto por:</strong> ${escapar(abertoPor)}</p>
+        <p><strong>Abertura:</strong> ${escapar(abertura)}</p>
+
+        <p><strong>Valor inicial:</strong>
+          ${dinheiro(caixa.valor_inicial)}</p>
+
+        <p><strong>Valor esperado:</strong>
+          ${dinheiro(caixa.valor_esperado)}</p>
+
+        <p><strong>Valor contado:</strong>
+          ${caixa.valor_contado == null
+            ? "Não informado"
+            : dinheiro(caixa.valor_contado)}</p>
+
+        <p><strong>Diferença:</strong>
+          ${caixa.diferenca == null
+            ? "—"
+            : dinheiro(caixa.diferenca)}</p>
+
+        <p><strong>Fechado por:</strong>
+          ${escapar(fechadoPor)}</p>
+
+        <p><strong>Fechamento:</strong>
+          ${escapar(fechamento)}</p>
+
+        <p><strong>Justificativa:</strong>
+          ${escapar(caixa.justificativa || "—")}</p>
+      `;
+
+      lista.appendChild(card);
+    });
+  }
+
+  // =====================================================
+  // SAIR
+  // =====================================================
 
   async function sair() {
     if (canalRealtime) {
@@ -1476,6 +1726,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function registrarPagamento(conta) {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para registrar pagamentos.");
+      return;
+    }
+
     const forma = document.querySelector("#forma").value;
     const valor = Number(document.querySelector("#valor").value);
     const recebido = forma === "dinheiro"
