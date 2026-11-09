@@ -796,20 +796,44 @@ document.addEventListener("DOMContentLoaded", async () => {
       String(hoje.getDate()).padStart(2, "0")
     ].join("-");
 
-    const primeiroDia = [
-      hoje.getFullYear(),
-      String(hoje.getMonth() + 1).padStart(2, "0"),
-      "01"
-    ].join("-");
+    const mesAtual = dataHoje.slice(0, 7);
+    const anoAtual = hoje.getFullYear();
 
     painel.innerHTML = `
       <h2>Histórico de caixa</h2>
 
-      <label>Data inicial</label>
-      <input id="historicoDataInicio" type="date">
+      <label>Período</label>
+      <select id="historicoPeriodo">
+        <option value="todos">Todo o histórico</option>
+        <option value="mes">Escolher mês</option>
+        <option value="ano">Escolher ano</option>
+        <option value="personalizado">Intervalo personalizado</option>
+      </select>
 
-      <label>Data final</label>
-      <input id="historicoDataFim" type="date">
+      <div id="filtroHistoricoMes" style="display:none;">
+        <label>Mês</label>
+        <input id="historicoMes" type="month">
+      </div>
+
+      <div id="filtroHistoricoAno" style="display:none;">
+        <label>Ano</label>
+        <input
+          id="historicoAno"
+          type="number"
+          min="2000"
+          max="2100"
+          step="1"
+          placeholder="Ex.: 2026"
+        >
+      </div>
+
+      <div id="filtroHistoricoDatas" style="display:none;">
+        <label>Data inicial</label>
+        <input id="historicoDataInicio" type="date">
+
+        <label>Data final</label>
+        <input id="historicoDataFim" type="date">
+      </div>
 
       <label>Status</label>
       <select id="historicoStatus">
@@ -826,8 +850,16 @@ document.addEventListener("DOMContentLoaded", async () => {
       <button id="voltarHistoricoCaixa">Voltar</button>
     `;
 
-    document.querySelector("#historicoDataInicio").value = primeiroDia;
+    document.querySelector("#historicoMes").value = mesAtual;
+    document.querySelector("#historicoAno").value = anoAtual;
+
+    document.querySelector("#historicoDataInicio").value =
+      `${anoAtual}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
+
     document.querySelector("#historicoDataFim").value = dataHoje;
+
+    document.querySelector("#historicoPeriodo").onchange =
+      atualizarCamposPeriodoHistorico;
 
     document.querySelector("#buscarHistoricoCaixa").onclick =
       carregarHistoricoCaixa;
@@ -835,7 +867,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.querySelector("#voltarHistoricoCaixa").onclick =
       mostrarInicio;
 
+    atualizarCamposPeriodoHistorico();
+
     await carregarHistoricoCaixa();
+  }
+
+  function atualizarCamposPeriodoHistorico() {
+    const periodo =
+      document.querySelector("#historicoPeriodo").value;
+
+    document.querySelector("#filtroHistoricoMes").style.display =
+      periodo === "mes" ? "block" : "none";
+
+    document.querySelector("#filtroHistoricoAno").style.display =
+      periodo === "ano" ? "block" : "none";
+
+    document.querySelector("#filtroHistoricoDatas").style.display =
+      periodo === "personalizado" ? "block" : "none";
   }
 
   async function carregarHistoricoCaixa() {
@@ -845,26 +893,76 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
-    const inicio = document.querySelector("#historicoDataInicio").value;
-    const fim = document.querySelector("#historicoDataFim").value;
-    const status = document.querySelector("#historicoStatus").value;
+    const periodo =
+      document.querySelector("#historicoPeriodo").value;
+
+    const status =
+      document.querySelector("#historicoStatus").value;
+
+    let inicio = null;
+    let fim = null;
+
+    if (periodo === "mes") {
+      const mesSelecionado =
+        document.querySelector("#historicoMes").value;
+
+      if (!/^\d{4}-\d{2}$/.test(mesSelecionado)) {
+        mensagem("Selecione um mês válido.");
+        return;
+      }
+
+      const [ano, mes] = mesSelecionado.split("-").map(Number);
+
+      if (mes < 1 || mes > 12) {
+        mensagem("Selecione um mês válido.");
+        return;
+      }
+
+      const ultimoDia = new Date(ano, mes, 0).getDate();
+
+      inicio =
+        `${ano}-${String(mes).padStart(2, "0")}-01`;
+
+      fim =
+        `${ano}-${String(mes).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
+    }
+
+    if (periodo === "ano") {
+      const ano = Number(
+        document.querySelector("#historicoAno").value
+      );
+
+      if (
+        !Number.isInteger(ano) ||
+        ano < 2000 ||
+        ano > 2100
+      ) {
+        mensagem("Informe um ano válido entre 2000 e 2100.");
+        return;
+      }
+
+      inicio = `${ano}-01-01`;
+      fim = `${ano}-12-31`;
+    }
+
+    if (periodo === "personalizado") {
+      inicio =
+        document.querySelector("#historicoDataInicio").value;
+
+      fim =
+        document.querySelector("#historicoDataFim").value;
+
+      if (!inicio || !fim || inicio > fim) {
+        mensagem("Confira as datas informadas.");
+        return;
+      }
+    }
 
     const lista = document.querySelector("#listaHistoricoCaixa");
     const resumo = document.querySelector("#resumoHistoricoCaixa");
 
-    if (!inicio || !fim || inicio > fim) {
-      mensagem("Confira as datas informadas.");
-      return;
-    }
-
     lista.textContent = "Consultando caixas...";
     resumo.textContent = "";
-
-    const inicioISO = new Date(inicio + "T00:00:00").toISOString();
-
-    const fimISO = new Date(
-      new Date(fim + "T00:00:00").getTime() + 86400000
-    ).toISOString();
 
     let consulta = supabase
       .from("caixas")
@@ -881,9 +979,24 @@ document.addEventListener("DOMContentLoaded", async () => {
         fechado_em,
         justificativa
       `)
-      .gte("aberto_em", inicioISO)
-      .lt("aberto_em", fimISO)
       .order("aberto_em", { ascending: false });
+
+    // Só aplica o filtro de data quando o usuário escolhe
+    // mês, ano ou intervalo personalizado.
+    // "Todo o histórico" consulta todos os registros disponíveis.
+
+    if (inicio && fim) {
+      const inicioISO =
+        new Date(inicio + "T00:00:00").toISOString();
+
+      const fimISO = new Date(
+        new Date(fim + "T00:00:00").getTime() + 86400000
+      ).toISOString();
+
+      consulta = consulta
+        .gte("aberto_em", inicioISO)
+        .lt("aberto_em", fimISO);
+    }
 
     if (status !== "todos") {
       consulta = consulta.eq("status", status);
