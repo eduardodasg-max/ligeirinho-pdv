@@ -1,4 +1,3 @@
-
 /* =====================================================
    LIGEIRINHO PDV
    Reconstrução da aplicação
@@ -11,7 +10,7 @@
 
   const SUPABASE_URL = "https://ewfxcsaxxsqixtmxruxz.supabase.co";
   const SUPABASE_KEY = "sb_publishable_1Cch1EDl59lNQFUiUIkmBQ_BXHuYjly";
-  const URL_RECUPERACAO = "https://eduardodasg-max.github.io/ligeirinho-pdv/";
+  const URL_RECUPERACAO = "https://eduardas g-max.github.io/ligeirinho-pdv/";
 
   let supabase;
   let painel;
@@ -29,25 +28,18 @@
       currency: "BRL"
     });
 
-  const mensagem = texto => window.alert(texto);
-
-  function mostrarErro(contexto, erro) {
-    console.error(contexto, erro);
-    mensagem(contexto + (erro?.message ? "\n" + erro.message : ""));
-  }
-
-  function limpar() {
-    painel.innerHTML = "";
-  }
-
-  function escapar(valor) {
-    return String(valor ?? "").replace(/[&<>"']/g, caractere => ({
+  const escapar = valor =>
+    String(valor ?? "").replace(/[&<>"']/g, caractere => ({
       "&": "&amp;",
       "<": "&lt;",
       ">": "&gt;",
       '"': "&quot;",
-      "'": "&#39;"
+      "'": "&#039;"
     })[caractere]);
+
+  function mostrarErro(mensagem, erro) {
+    console.error(mensagem, erro);
+    alert(`${mensagem}\n${erro?.message || ""}`);
   }
 
   function temPermissao(...funcoes) {
@@ -55,320 +47,239 @@
   }
 
   async function iniciar() {
-    painel = document.querySelector(".painel");
+    painel = document.getElementById("app");
 
     if (!painel) {
-      console.error("Elemento .painel não encontrado.");
+      console.error("Elemento #app não encontrado.");
       return;
     }
 
-    if (!window.supabase?.createClient) {
-      painel.innerHTML =
-        "<h2>Erro ao carregar</h2><p>A biblioteca do Supabase não foi carregada. Confira o index.html.</p>";
+    if (!window.supabase) {
+      painel.innerHTML = "<p>Não foi possível carregar o Supabase.</p>";
       return;
     }
 
-    try {
-      supabase = window.supabase.createClient(
-        SUPABASE_URL,
-        SUPABASE_KEY
-      );
+    supabase = window.supabase.createClient(
+      SUPABASE_URL,
+      SUPABASE_KEY
+    );
 
-      supabase.auth.onAuthStateChange(async (evento, sessao) => {
-        if (evento === "PASSWORD_RECOVERY") {
-          aguardandoRedefinicao = true;
-          mostrarRedefinirSenha();
-        }
-      });
+    const { data, error } = await supabase.auth.getSession();
 
-      const { data, error } = await supabase.auth.getSession();
+    if (error) {
+      mostrarErro("Erro ao verificar sessão.", error);
+      return;
+    }
 
-      if (error) throw error;
-
-      if (data.session) {
-        if (!aguardandoRedefinicao) {
-          await verificarUsuario();
-        }
-      } else {
-        mostrarLogin();
-      }
-    } catch (erro) {
-      mostrarErro("Não foi possível iniciar o Ligeirinho.", erro);
+    if (data.session) {
+      await carregarPerfil();
+    } else {
       mostrarLogin();
     }
-  }
 
-  // LOGIN
+    supabase.auth.onAuthStateChange(async (evento, sessao) => {
+      if (evento === "PASSWORD_RECOVERY") {
+        aguardandoRedefinicao = true;
+        mostrarRedefinirSenha();
+        return;
+      }
 
-  function mostrarLogin() {
-    limpar();
+      if (evento === "SIGNED_OUT") {
+        usuarioAtual = null;
+        perfilAtual = null;
+        mostrarLogin();
+        return;
+      }
 
-    painel.innerHTML = `
-      <h2>Acesso ao Ligeirinho</h2>
-
-      <label for="email">E-mail</label>
-      <input id="email" type="email" autocomplete="username"
-        placeholder="Seu e-mail">
-
-      <label for="senha">Senha</label>
-      <input id="senha" type="password"
-        autocomplete="current-password" placeholder="Sua senha">
-
-      <button id="entrar">Entrar</button>
-
-      <p>
-        <a href="#" id="esqueciSenha">Esqueci minha senha</a>
-      </p>
-
-      <p id="mensagemLogin"></p>
-    `;
-
-    document.querySelector("#entrar").onclick = entrar;
-    document.querySelector("#esqueciSenha").onclick = evento => {
-      evento.preventDefault();
-      solicitarRecuperacaoSenha();
-    };
-
-    document.querySelector("#senha").addEventListener("keydown", evento => {
-      if (evento.key === "Enter") entrar();
+      if (evento === "SIGNED_IN" && sessao) {
+        await carregarPerfil();
+      }
     });
   }
 
-  async function entrar() {
-    const email = document.querySelector("#email").value.trim();
-    const senha = document.querySelector("#senha").value;
-    const botao = document.querySelector("#entrar");
-    const aviso = document.querySelector("#mensagemLogin");
+  function mostrarLogin() {
+    painel.innerHTML = `
+      <section class="tela-login">
+        <h1>Ligeirinho PDV</h1>
+        <p>Entre para acessar o sistema.</p>
 
-    if (!email || !senha) {
-      aviso.textContent = "Informe seu e-mail e sua senha.";
-      return;
-    }
+        <form id="formLogin">
+          <label for="email">E-mail</label>
+          <input id="email" type="email" required autocomplete="email">
 
-    botao.disabled = true;
-    botao.textContent = "Entrando...";
-    aviso.textContent = "";
+          <label for="senha">Senha</label>
+          <input id="senha" type="password" required autocomplete="current-password">
 
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password: senha
-      });
+          <button type="submit">Entrar</button>
+          <button type="button" id="esqueciSenha">Esqueci minha senha</button>
+        </form>
 
-      if (error) throw error;
+        <p id="mensagemLogin"></p>
+      </section>
+    `;
 
-      await verificarUsuario();
-    } catch (erro) {
-      botao.disabled = false;
-      botao.textContent = "Entrar";
-      aviso.textContent = erro.message || "Falha no acesso.";
-    }
+    document.getElementById("formLogin").addEventListener("submit", entrar);
+    document.getElementById("esqueciSenha").addEventListener("click", recuperarSenha);
   }
 
-  // RECUPERAÇÃO DE SENHA
+  async function entrar(evento) {
+    evento.preventDefault();
 
-  async function solicitarRecuperacaoSenha() {
-    const campoEmail = document.querySelector("#email");
-    const aviso = document.querySelector("#mensagemLogin");
+    const email = document.getElementById("email").value.trim();
+    const senha = document.getElementById("senha").value;
+    const mensagem = document.getElementById("mensagemLogin");
 
-    let email = campoEmail?.value.trim() || "";
+    mensagem.textContent = "Entrando...";
 
-    if (!email) {
-      email = prompt("Informe o e-mail cadastrado no Ligeirinho:");
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password: senha
+    });
 
-      if (!email) {
-        aviso.textContent = "Informe um e-mail para recuperar a senha.";
-        return;
-      }
-
-      email = email.trim();
-
-      if (campoEmail) {
-        campoEmail.value = email;
-      }
-    }
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      aviso.textContent = "Informe um endereço de e-mail válido.";
+    if (error) {
+      mensagem.textContent = error.message;
       return;
     }
 
-    const botao = document.querySelector("#esqueciSenha");
+    await carregarPerfil();
+  }
 
-    if (botao) {
-      botao.style.pointerEvents = "none";
-      botao.textContent = "Enviando...";
+  async function recuperarSenha() {
+    const email = document.getElementById("email").value.trim();
+
+    if (!email) {
+      alert("Informe seu e-mail primeiro.");
+      return;
     }
 
-    aviso.textContent = "";
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: URL_RECUPERACAO
+    });
 
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: URL_RECUPERACAO
-      });
-
-      if (error) throw error;
-
-      aviso.textContent =
-        "Se o e-mail estiver cadastrado, você receberá um link para redefinir sua senha. Confira também a caixa de spam.";
-    } catch (erro) {
-      console.error("Erro ao solicitar recuperação:", erro);
-      aviso.textContent =
-        "Não foi possível solicitar a recuperação: " +
-        (erro.message || "tente novamente mais tarde.");
-    } finally {
-      if (botao) {
-        botao.style.pointerEvents = "";
-        botao.textContent = "Esqueci minha senha";
-      }
+    if (error) {
+      mostrarErro("Não foi possível enviar o e-mail.", error);
+      return;
     }
+
+    alert("Enviamos um link para redefinir sua senha.");
   }
 
   function mostrarRedefinirSenha() {
-    limpar();
-
     painel.innerHTML = `
-      <h2>Redefinir senha</h2>
-      <p>Digite sua nova senha abaixo.</p>
+      <section class="tela-login">
+        <h1>Redefinir senha</h1>
 
-      <label for="novaSenha">Nova senha</label>
-      <input id="novaSenha" type="password"
-        autocomplete="new-password" placeholder="Nova senha">
+        <form id="formNovaSenha">
+          <label for="novaSenha">Nova senha</label>
+          <input id="novaSenha" type="password" minlength="6" required>
 
-      <label for="confirmarSenha">Confirme a nova senha</label>
-      <input id="confirmarSenha" type="password"
-        autocomplete="new-password" placeholder="Repita a nova senha">
+          <label for="confirmarSenha">Confirmar nova senha</label>
+          <input id="confirmarSenha" type="password" minlength="6" required>
 
-      <button id="salvarNovaSenha">Salvar nova senha</button>
-      <p id="mensagemRedefinicao"></p>
+          <button type="submit">Salvar nova senha</button>
+        </form>
+
+        <p id="mensagemSenha"></p>
+      </section>
     `;
 
-    document.querySelector("#salvarNovaSenha").onclick =
-      salvarNovaSenha;
+    document.getElementById("formNovaSenha")
+      .addEventListener("submit", salvarNovaSenha);
   }
 
-  async function salvarNovaSenha() {
-    const senha = document.querySelector("#novaSenha").value;
-    const confirmacao = document.querySelector("#confirmarSenha").value;
-    const botao = document.querySelector("#salvarNovaSenha");
-    const aviso = document.querySelector("#mensagemRedefinicao");
+  async function salvarNovaSenha(evento) {
+    evento.preventDefault();
 
-    if (!senha || !confirmacao) {
-      aviso.textContent = "Preencha os dois campos.";
-      return;
-    }
-
-    if (senha.length < 6) {
-      aviso.textContent = "A senha deve ter pelo menos 6 caracteres.";
-      return;
-    }
+    const senha = document.getElementById("novaSenha").value;
+    const confirmacao = document.getElementById("confirmarSenha").value;
+    const mensagem = document.getElementById("mensagemSenha");
 
     if (senha !== confirmacao) {
-      aviso.textContent = "As senhas não são iguais.";
+      mensagem.textContent = "As senhas não coincidem.";
       return;
     }
 
-    botao.disabled = true;
-    botao.textContent = "Salvando...";
+    const { error } = await supabase.auth.updateUser({
+      password: senha
+    });
 
-    try {
-      const { error } = await supabase.auth.updateUser({
-        password: senha
-      });
-
-      if (error) throw error;
-
-      aguardandoRedefinicao = false;
-
-      await supabase.auth.signOut();
-
-      mensagem("Senha alterada com sucesso. Entre com sua nova senha.");
-
-      mostrarLogin();
-    } catch (erro) {
-      console.error("Erro ao redefinir senha:", erro);
-      aviso.textContent =
-        "Não foi possível alterar a senha: " +
-        (erro.message || "tente novamente.");
-      botao.disabled = false;
-      botao.textContent = "Salvar nova senha";
+    if (error) {
+      mensagem.textContent = error.message;
+      return;
     }
+
+    aguardandoRedefinicao = false;
+    alert("Senha alterada com sucesso.");
+    await carregarPerfil();
   }
 
-  async function verificarUsuario() {
-    try {
-      const { data, error } = await supabase.auth.getUser();
+  async function carregarPerfil() {
+    const { data: usuarioData, error: erroUsuario } =
+      await supabase.auth.getUser();
 
-      if (error || !data.user) {
-        mostrarLogin();
-        return;
-      }
-
-      usuarioAtual = data.user;
-
-      const { data: perfil, error: erroPerfil } = await supabase
-        .from("perfis_usuarios")
-        .select("id, nome, funcao, ativo")
-        .eq("id", usuarioAtual.id)
-        .single();
-
-      if (erroPerfil) throw erroPerfil;
-
-      if (!perfil || !perfil.ativo) {
-        throw new Error("Perfil não encontrado ou usuário inativo.");
-      }
-
-      if (!["administrador", "caixa", "garcom"].includes(perfil.funcao)) {
-        throw new Error("Função de usuário não reconhecida.");
-      }
-
-      perfilAtual = perfil;
-
-      await carregarProdutos();
-      await carregarMesas();
-      iniciarRealtime();
-      mostrarInicio();
-
-    } catch (erro) {
-      mostrarErro("Não foi possível validar seu perfil.", erro);
-      await supabase.auth.signOut();
-      usuarioAtual = null;
-      perfilAtual = null;
+    if (erroUsuario || !usuarioData.user) {
       mostrarLogin();
+      return;
     }
+
+    usuarioAtual = usuarioData.user;
+
+    const { data, error } = await supabase
+      .from("perfis_usuarios")
+      .select("*")
+      .eq("id", usuarioAtual.id)
+      .eq("ativo", true)
+      .single();
+
+    if (error || !data) {
+      mostrarErro("Não foi possível carregar seu perfil.", error);
+      return;
+    }
+
+    perfilAtual = data;
+
+    if (aguardandoRedefinicao) {
+      mostrarRedefinirSenha();
+      return;
+    }
+
+    await carregarAplicacao();
   }
 
-  // PAINEL PRINCIPAL
-
-  function mostrarInicio() {
-    limpar();
-
+  async function carregarAplicacao() {
     painel.innerHTML = `
-      <h2>🚤 Ligeirinho PDV</h2>
-      <p>Bem-vindo, ${escapar(perfilAtual.nome)}</p>
-      <p>Perfil: ${escapar(perfilAtual.funcao)}</p>
+      <header class="topo">
+        <div>
+          <h1>Ligeirinho PDV</h1>
+          <p>${escapar(perfilAtual.nome)} — ${escapar(perfilAtual.funcao)}</p>
+        </div>
 
-      <button id="mesas">Controle de mesas</button>
-      ${temPermissao("administrador")
-        ? '<button id="produtos">Produtos</button>' : ""}
-      ${temPermissao("administrador", "caixa")
-        ? '<button id="contas">Contas aguardando pagamento</button>' : ""}
-      <button id="atualizar">Atualizar</button>
-      <button id="sair">Sair</button>
+        <button id="sair">Sair</button>
+      </header>
+
+      <nav class="menu">
+        <button data-tela="mesas">Mesas</button>
+        <button data-tela="produtos">Produtos</button>
+        ${temPermissao("administrador", "caixa")
+          ? '<button data-tela="caixa">Caixa</button>'
+          : ""}
+        ${temPermissao("administrador")
+          ? '<button data-tela="perdas">Perdas</button>'
+          : ""}
+      </nav>
+
+      <main id="conteudo"></main>
     `;
 
-    document.querySelector("#mesas").onclick = mostrarMesas;
-    document.querySelector("#atualizar").onclick = atualizarTudo;
-    document.querySelector("#sair").onclick = sair;
+    document.getElementById("sair").addEventListener("click", sair);
 
-    if (temPermissao("administrador")) {
-      document.querySelector("#produtos").onclick = mostrarProdutos;
-    }
+    painel.querySelectorAll("[data-tela]").forEach(botao => {
+      botao.addEventListener("click", () => abrirTela(botao.dataset.tela));
+    });
 
-    if (temPermissao("administrador", "caixa")) {
-      document.querySelector("#contas").onclick =
-        carregarContasAguardando;
-    }
+    await carregarMesas();
+    abrirTela("mesas");
+    configurarRealtime();
   }
 
   async function sair() {
@@ -378,170 +289,37 @@
     }
 
     await supabase.auth.signOut();
-
-    usuarioAtual = null;
-    perfilAtual = null;
-    pedidoAtual = null;
-    produtos = [];
-    mesas = [];
-    aguardandoRedefinicao = false;
-
-    mostrarLogin();
   }
 
-  async function atualizarTudo() {
-    await carregarProdutos();
-    await carregarMesas();
-    mostrarMesas();
+  function conteudo() {
+    return document.getElementById("conteudo");
   }
 
-  // PRODUTOS
-
-  async function carregarProdutos() {
-    const { data, error } = await supabase
-      .from("produtos")
-      .select("*")
-      .order("nome");
-
-    if (error) throw error;
-
-    produtos = data || [];
-  }
-
-  function mostrarProdutos() {
-    limpar();
-
-    painel.innerHTML = `
-      <h2>Produtos</h2>
-      <button id="novo">Novo produto</button>
-      <button id="voltar">Voltar</button>
-      <div id="lista"></div>
-    `;
-
-    document.querySelector("#novo").onclick = () => formularioProduto();
-    document.querySelector("#voltar").onclick = mostrarInicio;
-
-    const lista = document.querySelector("#lista");
-
-    if (!produtos.length) {
-      lista.textContent = "Nenhum produto cadastrado.";
+  async function abrirTela(tela) {
+    if (tela === "mesas") {
+      await carregarMesas();
+      mostrarMesas();
       return;
     }
 
-    produtos.forEach(produto => {
-      const linha = document.createElement("div");
-      linha.className = "item-pedido";
-
-      const texto = document.createElement("span");
-      texto.textContent =
-        `${produto.nome} — ${dinheiro(produto.preco_venda)} — Estoque: ${produto.estoque}`;
-
-      const editar = document.createElement("button");
-      editar.textContent = "Editar";
-      editar.onclick = () => formularioProduto(produto);
-
-      linha.append(texto, editar);
-      lista.appendChild(linha);
-    });
-  }
-
-  function formularioProduto(produto = null) {
-    limpar();
-
-    const categorias = [
-      "Comida",
-      "Bebida",
-      "Petiscos",
-      "Drinks",
-      "Bebidas sem álcool"
-    ];
-
-    painel.innerHTML = `
-      <h2>${produto ? "Editar produto" : "Novo produto"}</h2>
-
-      <label>Código</label>
-      <input id="codigo">
-
-      <label>Nome</label>
-      <input id="nome">
-
-      <label>Categoria</label>
-      <select id="categoria">
-        <option value="">Selecione</option>
-        ${categorias.map(c =>
-          `<option value="${escapar(c)}">${escapar(c)}</option>`
-        ).join("")}
-      </select>
-
-      <label>Preço de venda</label>
-      <input id="preco" type="number" min="0" step="0.01">
-
-      <label>Custo</label>
-      <input id="custo" type="number" min="0" step="0.01">
-
-      <label>Estoque</label>
-      <input id="estoque" type="number" min="0" step="0.001">
-
-      <label>Estoque mínimo</label>
-      <input id="minimo" type="number" min="0" step="0.001">
-
-      <button id="salvar">Salvar</button>
-      <button id="cancelar">Voltar</button>
-    `;
-
-    if (produto) {
-      document.querySelector("#codigo").value = produto.codigo || "";
-      document.querySelector("#nome").value = produto.nome || "";
-      document.querySelector("#categoria").value = produto.categoria || "";
-      document.querySelector("#preco").value = produto.preco_venda ?? 0;
-      document.querySelector("#custo").value = produto.custo ?? 0;
-      document.querySelector("#estoque").value = produto.estoque ?? 0;
-      document.querySelector("#minimo").value = produto.estoque_minimo ?? 0;
-    }
-
-    document.querySelector("#salvar").onclick =
-      () => salvarProduto(produto);
-
-    document.querySelector("#cancelar").onclick = mostrarProdutos;
-  }
-
-  async function salvarProduto(produto) {
-    const registro = {
-      codigo: document.querySelector("#codigo").value.trim() || null,
-      nome: document.querySelector("#nome").value.trim(),
-      categoria: document.querySelector("#categoria").value,
-      preco_venda: Number(document.querySelector("#preco").value),
-      custo: Number(document.querySelector("#custo").value || 0),
-      estoque: Number(document.querySelector("#estoque").value || 0),
-      estoque_minimo: Number(document.querySelector("#minimo").value || 0),
-      ativo: true
-    };
-
-    if (!registro.nome || !registro.categoria ||
-        !Number.isFinite(registro.preco_venda) ||
-        registro.preco_venda < 0) {
-      mensagem("Confira o nome, a categoria e o preço.");
-      return;
-    }
-
-    try {
-      let consulta = supabase.from("produtos");
-
-      const resultado = produto
-        ? await consulta.update(registro).eq("id", produto.id)
-        : await consulta.insert(registro);
-
-      if (resultado.error) throw resultado.error;
-
+    if (tela === "produtos") {
       await carregarProdutos();
       mostrarProdutos();
-      mensagem("Produto salvo.");
-    } catch (erro) {
-      mostrarErro("Não foi possível salvar o produto.", erro);
+      return;
     }
-  }
 
-  // MESAS
+    if (tela === "caixa" && temPermissao("administrador", "caixa")) {
+      await mostrarCaixa();
+      return;
+    }
+
+    if (tela === "perdas" && temPermissao("administrador")) {
+      await mostrarPerdas();
+      return;
+    }
+
+    mostrarMesas();
+  }
 
   async function carregarMesas() {
     const { data, error } = await supabase
@@ -549,30 +327,41 @@
       .select("*")
       .order("numero");
 
-    if (error) throw error;
+    if (error) {
+      mostrarErro("Não foi possível carregar as mesas.", error);
+      return;
+    }
 
     mesas = data || [];
   }
 
   function mostrarMesas() {
-    limpar();
+    const area = conteudo();
 
-    painel.innerHTML = `
-      <h2>Controle de mesas</h2>
-      <button id="voltar">Voltar</button>
-      <div id="gradeMesas"></div>
+    if (!area) return;
+
+    area.innerHTML = `
+      <section>
+        <h2>Controle de mesas</h2>
+        <div class="grade-mesas">
+          ${mesas.map(mesa => `
+            <button
+              class="mesa mesa-${escapar(mesa.status)}"
+              data-mesa="${mesa.id}"
+            >
+              <strong>Mesa ${escapar(mesa.numero)}</strong>
+              <span>${escapar(mesa.status)}</span>
+            </button>
+          `).join("")}
+        </div>
+      </section>
     `;
 
-    document.querySelector("#voltar").onclick = mostrarInicio;
-
-    const grade = document.querySelector("#gradeMesas");
-
-    mesas.forEach(mesa => {
-      const botao = document.createElement("button");
-      botao.className = "mesa";
-      botao.textContent = `Mesa ${mesa.numero} — ${mesa.status}`;
-      botao.onclick = () => selecionarMesa(mesa);
-      grade.appendChild(botao);
+    area.querySelectorAll("[data-mesa]").forEach(botao => {
+      botao.addEventListener("click", () => {
+        const mesa = mesas.find(item => item.id === botao.dataset.mesa);
+        if (mesa) selecionarMesa(mesa);
+      });
     });
   }
 
@@ -587,15 +376,10 @@
       .select("*")
       .eq("mesa_id", mesa.id)
       .eq("status", "aberto")
-      .maybeSingle();
+      .single();
 
     if (error) {
-      mostrarErro("Erro ao consultar pedido.", error);
-      return;
-    }
-
-    if (!data) {
-      mensagem("Não foi encontrado pedido aberto nesta mesa.");
+      mostrarErro("Não foi possível localizar o pedido aberto.", error);
       return;
     }
 
@@ -606,15 +390,12 @@
 
   async function abrirMesa(mesa) {
     try {
-      const parametros = { p_mesa_id: mesa.id };
+      // O banco vincula o pedido automaticamente ao usuário autenticado.
+      // Administrador, caixa e garçom não precisam informar outro responsável.
+      const { error } = await supabase.rpc("abrir_mesa", {
+        p_mesa_id: mesa.id
+      });
 
-      if (temPermissao("administrador", "caixa")) {
-        const garcom = prompt("Informe o ID do garçom responsável:");
-        if (!garcom) return;
-        parametros.p_garcom_id = garcom.trim();
-      }
-
-      const { error } = await supabase.rpc("abrir_mesa", parametros);
       if (error) throw error;
 
       await carregarMesas();
@@ -639,109 +420,233 @@
     }
   }
 
-  // PEDIDOS E ITENS
+  let itensPedido = [];
 
   async function carregarItensPedido() {
+    if (!pedidoAtual) {
+      itensPedido = [];
+      return;
+    }
+
     const { data, error } = await supabase
       .from("itens_pedido")
-      .select("id, produto_id, quantidade, preco_unitario, subtotal, observacao, status_producao")
+      .select(`
+        *,
+        produtos (
+          nome,
+          categoria
+        )
+      `)
       .eq("pedido_id", pedidoAtual.id)
       .order("criado_em");
 
-    if (error) throw error;
+    if (error) {
+      mostrarErro("Não foi possível carregar os itens.", error);
+      return;
+    }
 
-    pedidoAtual.itens = data || [];
+    itensPedido = data || [];
   }
 
   function mostrarPedido(mesa) {
-    limpar();
+    const area = conteudo();
 
-    painel.innerHTML = `
-      <h2>Mesa ${mesa.numero}</h2>
-      <p>Pedido: ${pedidoAtual.id}</p>
-      <div id="itens"></div>
+    if (!area || !pedidoAtual) return;
 
-      <label>Produto</label>
-      <select id="produto">
-        <option value="">Selecione</option>
-        ${produtos.filter(p => p.ativo).map(p =>
-          `<option value="${p.id}">${escapar(p.nome)} — ${dinheiro(p.preco_venda)}</option>`
-        ).join("")}
-      </select>
+    area.innerHTML = `
+      <section>
+        <button id="voltarMesas">Voltar às mesas</button>
 
-      <label>Quantidade</label>
-      <input id="quantidade" type="number" min="0.001"
-        step="0.001" value="1">
+        <h2>Mesa ${escapar(mesa.numero)}</h2>
+        <p>Pedido aberto</p>
 
-      <label>Observação</label>
-      <input id="observacao">
+        ${temPermissao("administrador", "caixa", "garcom") ? `
+          <div class="adicionar-produto">
+            <h3>Adicionar produto</h3>
 
-      <button id="adicionar">Adicionar item</button>
-      <button id="fecharConta">Solicitar fechamento da conta</button>
-      <button id="voltar">Voltar às mesas</button>
+            <label for="produtoPedido">Produto</label>
+            <select id="produtoPedido">
+              <option value="">Selecione um produto</option>
+              ${produtos.filter(p => p.ativo).map(produto => `
+                <option value="${produto.id}">
+                  ${escapar(produto.nome)} — ${dinheiro(produto.preco_venda)}
+                </option>
+              `).join("")}
+            </select>
+
+            <label for="quantidadePedido">Quantidade</label>
+            <input id="quantidadePedido" type="number" min="0.001" step="0.001" value="1">
+
+            <label for="observacaoPedido">Observação</label>
+            <input id="observacaoPedido" type="text">
+
+            <button id="adicionarItem">Adicionar</button>
+          </div>
+        ` : ""}
+
+        <h3>Itens do pedido</h3>
+
+        <div class="lista-itens">
+          ${itensPedido.length ? itensPedido.map(item => `
+            <article class="item-pedido">
+              <div>
+                <strong>${escapar(item.produtos?.nome || "Produto")}</strong>
+                <span>${item.quantidade} × ${dinheiro(item.preco_unitario)}</span>
+                ${item.observacao
+                  ? `<small>${escapar(item.observacao)}</small>`
+                  : ""}
+              </div>
+              <strong>${dinheiro(item.subtotal)}</strong>
+            </article>
+          `).join("") : "<p>Nenhum produto lançado.</p>"}
+        </div>
+
+        <h3>Total: ${dinheiro(pedidoAtual.valor_total)}</h3>
+
+        <button id="solicitarFechamento">Solicitar fechamento da conta</button>
+      </section>
     `;
 
-    document.querySelector("#adicionar").onclick = adicionarItem;
-    document.querySelector("#fecharConta").onclick = solicitarFechamento;
-    document.querySelector("#voltar").onclick = async () => {
-      pedidoAtual = null;
-      await carregarMesas();
-      mostrarMesas();
-    };
+    document.getElementById("voltarMesas")
+      .addEventListener("click", async () => {
+        pedidoAtual = null;
+        await carregarMesas();
+        mostrarMesas();
+      });
 
-    mostrarItens();
+    const adicionar = document.getElementById("adicionarItem");
+
+    if (adicionar) {
+      adicionar.addEventListener("click", adicionarItem);
+    }
+
+    document.getElementById("solicitarFechamento")
+      .addEventListener("click", solicitarFechamento);
   }
 
-  function mostrarItens() {
-    const area = document.querySelector("#itens");
-    if (!area) return;
+  async function carregarProdutos() {
+    const { data, error } = await supabase
+      .from("produtos")
+      .select("*")
+      .order("nome");
 
-    area.innerHTML = "";
-
-    const itens = pedidoAtual?.itens || [];
-
-    if (!itens.length) {
-      area.textContent = "Nenhum item neste pedido.";
+    if (error) {
+      mostrarErro("Não foi possível carregar os produtos.", error);
       return;
     }
 
-    itens.forEach(item => {
-      const produto = produtos.find(p => p.id === item.produto_id);
-      const linha = document.createElement("div");
-      linha.className = "item-pedido";
+    produtos = data || [];
+  }
 
-      const nome = document.createElement("span");
-      nome.textContent =
-        `${produto?.nome || "Produto"} — ${item.quantidade} x ${dinheiro(item.preco_unitario)} = ${dinheiro(item.subtotal)}`;
+  function mostrarProdutos() {
+    const area = conteudo();
 
-      linha.appendChild(nome);
+    if (!area) return;
 
-      if (item.status_producao === "pendente") {
-        const remover = document.createElement("button");
-        remover.textContent = "Remover";
-        remover.onclick = () => removerItem(item.id);
-        linha.appendChild(remover);
-      }
+    area.innerHTML = `
+      <section>
+        <h2>Produtos</h2>
 
-      area.appendChild(linha);
-    });
+        ${temPermissao("administrador") ? `
+          <form id="formProduto">
+            <label for="nomeProduto">Nome</label>
+            <input id="nomeProduto" required>
 
-    const total = document.createElement("h3");
-    total.textContent = "Total: " + dinheiro(pedidoAtual.valor_total);
-    area.appendChild(total);
+            <label for="categoriaProduto">Categoria</label>
+            <select id="categoriaProduto">
+              <option value="comida">Comida</option>
+              <option value="bebida">Bebida</option>
+              <option value="petiscos">Petiscos</option>
+              <option value="drinks">Drinks</option>
+              <option value="bebidas sem álcool">Bebidas sem álcool</option>
+            </select>
+
+            <label for="precoProduto">Preço de venda</label>
+            <input id="precoProduto" type="number" min="0" step="0.01" required>
+
+            <label for="custoProduto">Custo</label>
+            <input id="custoProduto" type="number" min="0" step="0.01" value="0">
+
+            <label for="estoqueProduto">Estoque</label>
+            <input id="estoqueProduto" type="number" min="0" step="0.001" value="0">
+
+            <label for="estoqueMinimo">Estoque mínimo</label>
+            <input id="estoqueMinimo" type="number" min="0" step="0.001" value="0">
+
+            <button type="submit">Cadastrar produto</button>
+          </form>
+        ` : ""}
+
+        <div class="lista-produtos">
+          ${produtos.map(produto => `
+            <article>
+              <strong>${escapar(produto.nome)}</strong>
+              <span>${escapar(produto.categoria)}</span>
+              <span>${dinheiro(produto.preco_venda)}</span>
+              <span>Estoque: ${produto.estoque}</span>
+            </article>
+          `).join("")}
+        </div>
+      </section>
+    `;
+
+    const form = document.getElementById("formProduto");
+
+    if (form) {
+      form.addEventListener("submit", cadastrarProduto);
+    }
+  }
+
+  async function cadastrarProduto(evento) {
+    evento.preventDefault();
+
+    if (!temPermissao("administrador")) {
+      alert("Somente o administrador pode cadastrar produtos.");
+      return;
+    }
+
+    const novoProduto = {
+      nome: document.getElementById("nomeProduto").value.trim(),
+      categoria: document.getElementById("categoriaProduto").value,
+      preco_venda: Number(document.getElementById("precoProduto").value),
+      custo: Number(document.getElementById("custoProduto").value || 0),
+      estoque: Number(document.getElementById("estoqueProduto").value || 0),
+      estoque_minimo: Number(document.getElementById("estoqueMinimo").value || 0),
+      ativo: true
+    };
+
+    const { error } = await supabase
+      .from("produtos")
+      .insert(novoProduto);
+
+    if (error) {
+      mostrarErro("Não foi possível cadastrar o produto.", error);
+      return;
+    }
+
+    alert("Produto cadastrado.");
+    await carregarProdutos();
+    mostrarProdutos();
   }
 
   async function adicionarItem() {
-    const produtoId = document.querySelector("#produto").value;
-    const quantidade = Number(document.querySelector("#quantidade").value);
-    const observacao = document.querySelector("#observacao").value.trim();
-
-    if (!produtoId || !Number.isFinite(quantidade) || quantidade <= 0) {
-      mensagem("Selecione um produto e informe uma quantidade válida.");
-      return;
-    }
-
     try {
+      const produtoId = document.getElementById("produtoPedido").value;
+      const quantidade = Number(
+        document.getElementById("quantidadePedido").value
+      );
+      const observacao = document.getElementById("observacaoPedido").value.trim();
+
+      if (!produtoId) {
+        alert("Selecione um produto.");
+        return;
+      }
+
+      if (!Number.isFinite(quantidade) || quantidade <= 0) {
+        alert("Informe uma quantidade válida.");
+        return;
+      }
+
       const { error } = await supabase.rpc("adicionar_item_pedido", {
         p_pedido_id: pedidoAtual.id,
         p_produto_id: produtoId,
@@ -751,53 +656,29 @@
 
       if (error) throw error;
 
-      await atualizarPedidoAtual();
-      mensagem("Item adicionado.");
+      const { data, error: erroPedido } = await supabase
+        .from("pedidos")
+        .select("*")
+        .eq("id", pedidoAtual.id)
+        .single();
+
+      if (erroPedido) throw erroPedido;
+
+      pedidoAtual = data;
+      await carregarItensPedido();
+
+      const mesa = mesas.find(m => m.id === pedidoAtual.mesa_id);
+
+      if (mesa) {
+        mostrarPedido(mesa);
+      }
+
     } catch (erro) {
-      mostrarErro("Não foi possível adicionar o item.", erro);
+      mostrarErro("Não foi possível adicionar o produto.", erro);
     }
-  }
-
-  async function removerItem(itemId) {
-    if (!confirm("Deseja remover este item?")) return;
-
-    try {
-      const { error } = await supabase.rpc("remover_item_pedido", {
-        p_item_id: itemId
-      });
-
-      if (error) throw error;
-
-      await atualizarPedidoAtual();
-    } catch (erro) {
-      mostrarErro("Não foi possível remover o item.", erro);
-    }
-  }
-
-  async function atualizarPedidoAtual() {
-    const { data, error } = await supabase
-      .from("pedidos")
-      .select("*")
-      .eq("id", pedidoAtual.id)
-      .single();
-
-    if (error) throw error;
-
-    pedidoAtual = data;
-    await carregarItensPedido();
-
-    const mesa = mesas.find(m => m.id === pedidoAtual.mesa_id);
-    if (mesa) mostrarPedido(mesa);
   }
 
   async function solicitarFechamento() {
-    if (!pedidoAtual?.id) {
-      mensagem("Nenhum pedido selecionado.");
-      return;
-    }
-
-    if (!confirm("Deseja solicitar o fechamento desta conta?")) return;
-
     try {
       const { error } = await supabase.rpc("solicitar_fechamento_conta", {
         p_pedido_id: pedidoAtual.id
@@ -805,175 +686,354 @@
 
       if (error) throw error;
 
+      alert("Solicitação de fechamento enviada.");
+
+      pedidoAtual = null;
       await carregarMesas();
-      mensagem("Conta enviada ao caixa.");
       mostrarMesas();
+
     } catch (erro) {
-      mostrarErro("Não foi possível solicitar o fechamento da conta.", erro);
+      mostrarErro("Não foi possível solicitar o fechamento.", erro);
     }
   }
 
-  // CONTAS AGUARDANDO PAGAMENTO
+  async function mostrarCaixa() {
+    const area = conteudo();
 
-  async function carregarContasAguardando() {
-    try {
-      const { data, error } = await supabase.rpc(
-        "listar_contas_aguardando_pagamento"
-      );
+    if (!area) return;
 
-      if (error) throw error;
+    const { data: caixas, error } = await supabase
+      .from("caixas")
+      .select("*")
+      .order("aberto_em", { ascending: false });
 
-      mostrarContasAguardando(data || []);
-    } catch (erro) {
-      mostrarErro("Não foi possível carregar as contas.", erro);
-    }
-  }
-
-  function mostrarContasAguardando(contas) {
-    limpar();
-
-    painel.innerHTML = `
-      <h2>Contas aguardando pagamento</h2>
-      <button id="atualizarContas">Atualizar</button>
-      <button id="voltar">Voltar</button>
-      <div id="listaContas"></div>
-    `;
-
-    document.querySelector("#atualizarContas").onclick =
-      carregarContasAguardando;
-    document.querySelector("#voltar").onclick = mostrarInicio;
-
-    const lista = document.querySelector("#listaContas");
-
-    if (!contas.length) {
-      lista.textContent = "Não há contas aguardando pagamento.";
+    if (error) {
+      mostrarErro("Não foi possível carregar o caixa.", error);
       return;
     }
 
-    contas.forEach(conta => {
-      const linha = document.createElement("div");
-      linha.className = "item-pedido";
+    const caixaAberto = (caixas || []).find(c => !c.fechado_em);
 
-      const numeroMesa =
-        conta.mesa_numero ?? conta.numero_mesa ?? conta.mesa ?? "—";
-      const total =
-        conta.valor_total ?? conta.total ?? conta.valor ?? 0;
-      const garcom =
-        conta.garcom_nome ?? conta.nome_garcom ?? conta.garcom ?? "";
+    area.innerHTML = `
+      <section>
+        <h2>Controle de caixa</h2>
 
-      const descricao = document.createElement("p");
-      descricao.textContent =
-        `Mesa ${numeroMesa} — ${dinheiro(total)}` +
-        (garcom ? ` — Garçom: ${garcom}` : "");
+        ${caixaAberto ? `
+          <p>Caixa aberto</p>
+          <p>Valor inicial: ${dinheiro(caixaAberto.valor_inicial)}</p>
 
-      const pagar = document.createElement("button");
-      pagar.textContent = "Registrar pagamento";
-      pagar.onclick = () => mostrarFormularioPagamento(conta);
+          <button id="movimentacaoCaixa">Registrar movimentação</button>
+          <button id="fecharCaixa">Fechar caixa</button>
+        ` : `
+          <p>Nenhum caixa aberto por você.</p>
 
-      linha.append(descricao, pagar);
-      lista.appendChild(linha);
+          <form id="formAbrirCaixa">
+            <label for="valorInicial">Valor inicial</label>
+            <input id="valorInicial" type="number" min="0" step="0.01" value="0" required>
+            <button type="submit">Abrir caixa</button>
+          </form>
+        `}
+
+        <button id="contasPendentes">Contas aguardando pagamento</button>
+        <div id="areaContas"></div>
+      </section>
+    `;
+
+    const formAbrir = document.getElementById("formAbrirCaixa");
+
+    if (formAbrir) {
+      formAbrir.addEventListener("submit", abrirCaixa);
+    }
+
+    const botaoMovimentacao = document.getElementById("movimentacaoCaixa");
+
+    if (botaoMovimentacao) {
+      botaoMovimentacao.addEventListener("click", registrarMovimentacao);
+    }
+
+    const botaoFechar = document.getElementById("fecharCaixa");
+
+    if (botaoFechar) {
+      botaoFechar.addEventListener("click", fecharCaixa);
+    }
+
+    document.getElementById("contasPendentes")
+      .addEventListener("click", listarContasPendentes);
+  }
+
+  async function abrirCaixa(evento) {
+    evento.preventDefault();
+
+    const valor = Number(document.getElementById("valorInicial").value);
+
+    if (!Number.isFinite(valor) || valor < 0) {
+      alert("Informe um valor inicial válido.");
+      return;
+    }
+
+    const { error } = await supabase.rpc("abrir_caixa", {
+      p_valor_inicial: valor
+    });
+
+    if (error) {
+      mostrarErro("Não foi possível abrir o caixa.", error);
+      return;
+    }
+
+    alert("Caixa aberto.");
+    await mostrarCaixa();
+  }
+
+  async function registrarMovimentacao() {
+    const tipo = prompt("Digite suprimento ou sangria:");
+
+    if (!["suprimento", "sangria"].includes(tipo)) {
+      alert("Tipo inválido.");
+      return;
+    }
+
+    const valor = Number(prompt("Informe o valor:"));
+
+    if (!Number.isFinite(valor) || valor <= 0) {
+      alert("Valor inválido.");
+      return;
+    }
+
+    const descricao = prompt("Informe a descrição da movimentação:");
+
+    if (!descricao?.trim()) {
+      alert("A descrição é obrigatória.");
+      return;
+    }
+
+    const { error } = await supabase.rpc("registrar_movimentacao_caixa", {
+      p_tipo: tipo,
+      p_valor: valor,
+      p_descricao: descricao.trim()
+    });
+
+    if (error) {
+      mostrarErro("Não foi possível registrar a movimentação.", error);
+      return;
+    }
+
+    alert("Movimentação registrada.");
+    await mostrarCaixa();
+  }
+
+  async function fecharCaixa() {
+    const valor = Number(prompt("Informe o valor contado no caixa:"));
+
+    if (!Number.isFinite(valor) || valor < 0) {
+      alert("Valor contado inválido.");
+      return;
+    }
+
+    const justificativa = prompt("Justificativa (se houver):") || "";
+
+    const { error } = await supabase.rpc("fechar_caixa", {
+      p_valor_contado: valor,
+      p_justificativa: justificativa
+    });
+
+    if (error) {
+      mostrarErro("Não foi possível fechar o caixa.", error);
+      return;
+    }
+
+    alert("Caixa fechado.");
+    await mostrarCaixa();
+  }
+
+  async function listarContasPendentes() {
+    const area = document.getElementById("areaContas");
+
+    const { data, error } = await supabase.rpc(
+      "listar_contas_aguardando_pagamento"
+    );
+
+    if (error) {
+      mostrarErro("Não foi possível carregar as contas.", error);
+      return;
+    }
+
+    area.innerHTML = `
+      <h3>Contas aguardando pagamento</h3>
+
+      ${(data || []).map(conta => `
+        <article>
+          <strong>Mesa ${escapar(conta.numero_mesa ?? conta.mesa_numero ?? "")}</strong>
+          <span>${dinheiro(conta.valor_total)}</span>
+          <button data-pagar="${conta.pedido_id ?? conta.id}">Registrar pagamento</button>
+        </article>
+      `).join("") || "<p>Nenhuma conta pendente.</p>"}
+    `;
+
+    area.querySelectorAll("[data-pagar]").forEach(botao => {
+      botao.addEventListener("click", () => registrarPagamento(botao.dataset.pagar));
     });
   }
 
-  function mostrarFormularioPagamento(conta) {
-    limpar();
+  async function registrarPagamento(pedidoId) {
+    const forma = prompt("Forma de pagamento: dinheiro, pix, debito ou credito:");
 
-    const pedidoId =
-      conta.pedido_id ?? conta.id_pedido ?? conta.id;
-    const total =
-      Number(conta.valor_total ?? conta.total ?? conta.valor ?? 0);
+    if (!["dinheiro", "pix", "debito", "credito"].includes(forma)) {
+      alert("Forma de pagamento inválida.");
+      return;
+    }
 
-    painel.innerHTML = `
-      <h2>Registrar pagamento</h2>
-      <p>Valor da conta: <strong>${dinheiro(total)}</strong></p>
+    const valor = Number(prompt("Valor do pagamento:"));
 
-      <label for="formaPagamento">Forma de pagamento</label>
-      <select id="formaPagamento">
-        <option value="dinheiro">Dinheiro</option>
-        <option value="pix">Pix</option>
-        <option value="debito">Débito</option>
-        <option value="credito">Crédito</option>
-      </select>
+    if (!Number.isFinite(valor) || valor <= 0) {
+      alert("Valor inválido.");
+      return;
+    }
 
-      <label for="valorPagamento">Valor a pagar</label>
-      <input id="valorPagamento" type="number" min="0.01"
-        step="0.01" value="${total.toFixed(2)}">
+    let recebido = null;
 
-      <div id="campoRecebido">
-        <label for="valorRecebido">Valor recebido em dinheiro</label>
-        <input id="valorRecebido" type="number" min="0"
-          step="0.01" value="${total.toFixed(2)}">
-      </div>
+    if (forma === "dinheiro") {
+      recebido = Number(prompt("Valor recebido:"));
 
-      <button id="confirmarPagamento">Confirmar pagamento</button>
-      <button id="voltarContas">Voltar</button>
-      <p id="mensagemPagamento"></p>
+      if (!Number.isFinite(recebido) || recebido < valor) {
+        alert("Valor recebido insuficiente.");
+        return;
+      }
+    }
+
+    const { error } = await supabase.rpc("registrar_pagamento", {
+      p_pedido_id: pedidoId,
+      p_forma_pagamento: forma,
+      p_valor: valor,
+      p_valor_recebido: recebido
+    });
+
+    if (error) {
+      mostrarErro("Não foi possível registrar o pagamento.", error);
+      return;
+    }
+
+    alert("Pagamento registrado.");
+    await listarContasPendentes();
+    await carregarMesas();
+  }
+
+  async function mostrarPerdas() {
+    const area = conteudo();
+
+    if (!area || !temPermissao("administrador")) return;
+
+    const { data, error } = await supabase
+      .from("itens_perdidos")
+      .select(`
+        *,
+        produtos (nome)
+      `)
+      .order("criado_em", { ascending: false });
+
+    if (error) {
+      mostrarErro("Não foi possível carregar as perdas.", error);
+      return;
+    }
+
+    area.innerHTML = `
+      <section>
+        <h2>Controle de perdas</h2>
+
+        <form id="formPerda">
+          <label for="produtoPerda">Produto</label>
+          <select id="produtoPerda" required>
+            <option value="">Selecione</option>
+            ${produtos.map(p => `
+              <option value="${p.id}">${escapar(p.nome)}</option>
+            `).join("")}
+          </select>
+
+          <label for="quantidadePerda">Quantidade</label>
+          <input id="quantidadePerda" type="number" min="0.001" step="0.001" required>
+
+          <label for="motivoPerda">Motivo</label>
+          <select id="motivoPerda" required>
+            <option value="quebra">Quebra</option>
+            <option value="vencimento">Vencimento</option>
+            <option value="erro de preparo">Erro de preparo</option>
+            <option value="derramamento">Derramamento</option>
+            <option value="perda de validade">Perda de validade</option>
+            <option value="outros">Outros</option>
+          </select>
+
+          <label for="observacaoPerda">Observação</label>
+          <input id="observacaoPerda" type="text">
+
+          <button type="submit">Registrar perda</button>
+        </form>
+
+        <h3>Histórico de perdas</h3>
+
+        ${(data || []).map(item => `
+          <article>
+            <strong>${escapar(item.produtos?.nome || "Produto")}</strong>
+            <span>Quantidade: ${item.quantidade}</span>
+            <span>Prejuízo: ${dinheiro(item.subtotal)}</span>
+            <span>${escapar(item.motivo || item.observacao || "")}</span>
+          </article>
+        `).join("")}
+      </section>
     `;
 
-    const forma = document.querySelector("#formaPagamento");
-    const campoRecebido = document.querySelector("#campoRecebido");
-
-    forma.onchange = () => {
-      campoRecebido.style.display =
-        forma.value === "dinheiro" ? "block" : "none";
-    };
-
-    document.querySelector("#confirmarPagamento").onclick =
-      () => registrarPagamento(pedidoId);
-    document.querySelector("#voltarContas").onclick =
-      carregarContasAguardando;
+    document.getElementById("formPerda")
+      .addEventListener("submit", registrarPerda);
   }
 
-  async function registrarPagamento(pedidoId) {
-    const forma = document.querySelector("#formaPagamento").value;
-    const valor = Number(document.querySelector("#valorPagamento").value);
-    const recebidoCampo = document.querySelector("#valorRecebido");
-    const valorRecebido =
-      forma === "dinheiro" ? Number(recebidoCampo.value) : null;
-    const botao = document.querySelector("#confirmarPagamento");
-    const aviso = document.querySelector("#mensagemPagamento");
+  async function registrarPerda(evento) {
+    evento.preventDefault();
 
-    if (!pedidoId || !Number.isFinite(valor) || valor <= 0) {
-      aviso.textContent = "Informe um valor de pagamento válido.";
+    if (!temPermissao("administrador")) {
+      alert("Somente o administrador pode registrar perdas.");
       return;
     }
 
-    if (forma === "dinheiro" &&
-        (!Number.isFinite(valorRecebido) || valorRecebido < valor)) {
-      aviso.textContent =
-        "O valor recebido deve ser igual ou maior que o pagamento.";
+    const produtoId = document.getElementById("produtoPerda").value;
+    const quantidade = Number(document.getElementById("quantidadePerda").value);
+    const motivo = document.getElementById("motivoPerda").value;
+    const observacao = document.getElementById("observacaoPerda").value.trim();
+
+    const produto = produtos.find(p => p.id === produtoId);
+
+    if (!produto) {
+      alert("Produto não encontrado.");
       return;
     }
 
-    botao.disabled = true;
-    botao.textContent = "Registrando...";
+    if (!Number.isFinite(quantidade) || quantidade <= 0) {
+      alert("Quantidade inválida.");
+      return;
+    }
 
-    try {
-      const { error } = await supabase.rpc("registrar_pagamento", {
-        p_pedido_id: pedidoId,
-        p_forma_pagamento: forma,
-        p_valor: valor,
-        p_valor_recebido: valorRecebido
+    const custo = Number(produto.custo || 0);
+
+    const { error } = await supabase
+      .from("itens_perdidos")
+      .insert({
+        produto_id: produtoId,
+        quantidade,
+        preco_unitario: custo,
+        subtotal: Number((custo * quantidade).toFixed(2)),
+        observacao: [motivo, observacao].filter(Boolean).join(" — ")
       });
 
-      if (error) throw error;
-
-      mensagem("Pagamento registrado.");
-      await carregarMesas();
-      await carregarContasAguardando();
-    } catch (erro) {
-      mostrarErro("Não foi possível registrar o pagamento.", erro);
-      botao.disabled = false;
-      botao.textContent = "Confirmar pagamento";
+    if (error) {
+      mostrarErro("Não foi possível registrar a perda.", error);
+      return;
     }
+
+    alert("Perda registrada.");
+    await carregarProdutos();
+    await mostrarPerdas();
   }
 
-  // ATUALIZAÇÃO EM TEMPO REAL
-
-  function iniciarRealtime() {
+  function configurarRealtime() {
     if (canalRealtime) {
       supabase.removeChannel(canalRealtime);
-      canalRealtime = null;
     }
 
     canalRealtime = supabase
@@ -982,11 +1042,10 @@
         "postgres_changes",
         { event: "*", schema: "public", table: "mesas" },
         async () => {
-          try {
-            await carregarMesas();
-            if (document.querySelector("#gradeMesas")) mostrarMesas();
-          } catch (erro) {
-            console.error("Erro ao atualizar mesas em tempo real:", erro);
+          await carregarMesas();
+
+          if (conteudo()?.querySelector(".grade-mesas")) {
+            mostrarMesas();
           }
         }
       )
@@ -994,18 +1053,19 @@
         "postgres_changes",
         { event: "*", schema: "public", table: "pedidos" },
         async payload => {
-          try {
-            await carregarMesas();
+          if (
+            pedidoAtual &&
+            payload.new?.id === pedidoAtual.id &&
+            payload.new?.status === "aberto"
+          ) {
+            pedidoAtual = payload.new;
+            await carregarItensPedido();
 
-            if (pedidoAtual?.id &&
-                (payload.new?.id === pedidoAtual.id ||
-                 payload.old?.id === pedidoAtual.id)) {
-              await atualizarPedidoAtual();
-            } else if (document.querySelector("#gradeMesas")) {
-              mostrarMesas();
+            const mesa = mesas.find(m => m.id === pedidoAtual.mesa_id);
+
+            if (mesa && conteudo()?.querySelector(".lista-itens")) {
+              mostrarPedido(mesa);
             }
-          } catch (erro) {
-            console.error("Erro ao atualizar pedidos em tempo real:", erro);
           }
         }
       )
@@ -1013,12 +1073,29 @@
         "postgres_changes",
         { event: "*", schema: "public", table: "itens_pedido" },
         async payload => {
-          try {
-            if (pedidoAtual?.id) {
-              await atualizarPedidoAtual();
+          if (
+            pedidoAtual &&
+            (
+              payload.new?.pedido_id === pedidoAtual.id ||
+              payload.old?.pedido_id === pedidoAtual.id
+            )
+          ) {
+            await carregarItensPedido();
+
+            const mesa = mesas.find(m => m.id === pedidoAtual.mesa_id);
+
+            if (mesa && conteudo()?.querySelector(".lista-itens")) {
+              const { data } = await supabase
+                .from("pedidos")
+                .select("*")
+                .eq("id", pedidoAtual.id)
+                .single();
+
+              if (data) {
+                pedidoAtual = data;
+                mostrarPedido(mesa);
+              }
             }
-          } catch (erro) {
-            console.error("Erro ao atualizar itens em tempo real:", erro);
           }
         }
       )
