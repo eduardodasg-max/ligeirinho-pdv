@@ -1,9 +1,9 @@
-
 /* =====================================================
    LIGEIRINHO PDV
    Supabase + Produtos + Mesas + Pedidos + Realtime
    + Recuperação de senha + Abertura e fechamento de caixa
    + Histórico de caixa + Relatório de faturamento
+   + Controle de estoque
    ===================================================== */
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -376,6 +376,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? '<button id="botaoProdutos">Produtos</button>'
         : ""}
 
+      ${temPermissao("administrador")
+        ? '<button id="botaoEstoque">Estoque</button>'
+        : ""}
+
       ${temPermissao("administrador", "caixa")
         ? '<button id="botaoContas">Contas aguardando pagamento</button>'
         : ""}
@@ -402,6 +406,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         mostrarRelatorios;
 
       document.querySelector("#botaoProdutos").onclick = carregarProdutos;
+
+      document.querySelector("#botaoEstoque").onclick = mostrarEstoque;
     }
 
     if (temPermissao("administrador", "caixa")) {
@@ -1674,6 +1680,216 @@ document.addEventListener("DOMContentLoaded", async () => {
     mensagem("Produto salvo com sucesso!");
     await carregarProdutosSilencioso();
     mostrarListaProdutos();
+  }
+
+  // =====================================================
+  // ESTOQUE
+  // =====================================================
+
+  function obterStatusEstoque(produto) {
+    const quantidade = Number(produto.estoque || 0);
+    const minimo = Number(produto.estoque_minimo || 0);
+
+    if (quantidade <= 0) {
+      return {
+        codigo: "sem_estoque",
+        texto: "SEM ESTOQUE"
+      };
+    }
+
+    if (minimo > 0 && quantidade < minimo) {
+      return {
+        codigo: "critico",
+        texto: "ESTOQUE CRÍTICO"
+      };
+    }
+
+    if (minimo > 0 && quantidade === minimo) {
+      return {
+        codigo: "baixo",
+        texto: "ESTOQUE BAIXO"
+      };
+    }
+
+    return {
+      codigo: "normal",
+      texto: "NORMAL"
+    };
+  }
+
+  async function mostrarEstoque() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode acessar o estoque.");
+      mostrarInicio();
+      return;
+    }
+
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Controle de Estoque</h2>
+      <p>Carregando informações do estoque...</p>
+    `;
+
+    await carregarEstoque();
+  }
+
+  async function carregarEstoque() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode consultar o estoque.");
+      mostrarInicio();
+      return;
+    }
+
+    const painelEstoque = painel;
+
+    painelEstoque.innerHTML = `
+      <h2>Controle de Estoque</h2>
+      <p>Consultando produtos...</p>
+    `;
+
+    const { data, error } = await supabase
+      .from("produtos")
+      .select("id, nome, categoria, estoque, estoque_minimo, ativo")
+      .eq("ativo", true)
+      .order("nome");
+
+    if (error) {
+      erro("Não foi possível carregar o estoque.", error);
+
+      painelEstoque.innerHTML = `
+        <h2>Controle de Estoque</h2>
+        <p>Não foi possível carregar os produtos.</p>
+        <button id="tentarNovamenteEstoque">Tentar novamente</button>
+        <button id="voltarEstoque">Voltar</button>
+      `;
+
+      document.querySelector("#tentarNovamenteEstoque").onclick =
+        carregarEstoque;
+
+      document.querySelector("#voltarEstoque").onclick = mostrarInicio;
+
+      return;
+    }
+
+    const listaProdutos = data || [];
+
+    const semEstoque = listaProdutos.filter(produto =>
+      obterStatusEstoque(produto).codigo === "sem_estoque"
+    );
+
+    const criticos = listaProdutos.filter(produto =>
+      obterStatusEstoque(produto).codigo === "critico"
+    );
+
+    const baixos = listaProdutos.filter(produto =>
+      obterStatusEstoque(produto).codigo === "baixo"
+    );
+
+    const normais = listaProdutos.filter(produto =>
+      obterStatusEstoque(produto).codigo === "normal"
+    );
+
+    const precisamReposicao = [
+      ...semEstoque,
+      ...criticos,
+      ...baixos
+    ];
+
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Controle de Estoque</h2>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <strong>Produtos sem estoque</strong>
+        <h2>${semEstoque.length}</h2>
+      </div>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <strong>Estoque crítico</strong>
+        <h2>${criticos.length}</h2>
+      </div>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <strong>Estoque baixo</strong>
+        <h2>${baixos.length}</h2>
+      </div>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <strong>Estoque normal</strong>
+        <h2>${normais.length}</h2>
+      </div>
+
+      <h3>Produtos que precisam de reposição</h3>
+      <div id="listaEstoque"></div>
+
+      <button id="atualizarEstoque">Atualizar estoque</button>
+      <button id="voltarEstoque">Voltar</button>
+    `;
+
+    const lista = document.querySelector("#listaEstoque");
+
+    if (!listaProdutos.length) {
+      lista.textContent = "Nenhum produto ativo cadastrado.";
+    } else if (!precisamReposicao.length) {
+      lista.textContent =
+        "Todos os produtos estão com estoque acima do mínimo.";
+    } else {
+      precisamReposicao.forEach(produto => {
+        const status = obterStatusEstoque(produto);
+
+        const item = document.createElement("div");
+        item.className = "item-pedido";
+        item.style.display = "block";
+        item.style.marginBottom = "10px";
+
+        const nome = document.createElement("strong");
+        nome.textContent = produto.nome;
+
+        const categoria = document.createElement("p");
+        categoria.textContent =
+          `Categoria: ${produto.categoria || "Não informada"}`;
+
+        const quantidade = document.createElement("p");
+        quantidade.textContent =
+          `Estoque atual: ${Number(produto.estoque || 0)}`;
+
+        const minimo = document.createElement("p");
+        minimo.textContent =
+          `Estoque mínimo: ${Number(produto.estoque_minimo || 0)}`;
+
+        const situacao = document.createElement("p");
+        situacao.textContent = status.texto;
+
+        if (status.codigo === "sem_estoque") {
+          situacao.style.fontWeight = "bold";
+          situacao.style.color = "#d32f2f";
+        } else if (
+          status.codigo === "critico" ||
+          status.codigo === "baixo"
+        ) {
+          situacao.style.fontWeight = "bold";
+          situacao.style.color = "#ed8b00";
+        }
+
+        item.append(
+          nome,
+          categoria,
+          quantidade,
+          minimo,
+          situacao
+        );
+
+        lista.appendChild(item);
+      });
+    }
+
+    document.querySelector("#atualizarEstoque").onclick =
+      carregarEstoque;
+
+    document.querySelector("#voltarEstoque").onclick =
+      mostrarInicio;
   }
 
   // =====================================================
