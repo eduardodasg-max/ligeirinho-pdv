@@ -1,7 +1,7 @@
 
 /* =====================================================
    LIGEIRINHO PDV
-   Cadastro de produtos aprimorado
+   Cadastro de produtos + alertas automáticos de estoque
    ===================================================== */
 
 (() => {
@@ -53,6 +53,137 @@
   function temPermissao(...funcoes) {
     return funcoes.includes(perfilAtual?.funcao);
   }
+
+  // CLASSIFICAÇÃO DO ESTOQUE
+
+  function calcularAlertasEstoque() {
+    const ativos = produtos.filter(produto => produto.ativo);
+
+    const zerados = ativos.filter(produto =>
+      Number(produto.estoque || 0) <= 0
+    );
+
+    const baixos = ativos.filter(produto =>
+      Number(produto.estoque || 0) > 0 &&
+      Number(produto.estoque || 0) <=
+        Number(produto.estoque_minimo || 0)
+    );
+
+    return {
+      ativos,
+      zerados,
+      baixos,
+      total: zerados.length + baixos.length
+    };
+  }
+
+  function atualizarAvisosInicio() {
+    const area = document.querySelector("#alertasEstoqueInicio");
+
+    if (!area) return;
+
+    const alertas = calcularAlertasEstoque();
+
+    if (alertas.total === 0) {
+      area.innerHTML = `
+        <div style="
+          padding: 12px;
+          margin: 12px 0;
+          border: 1px solid #2e9d61;
+          border-radius: 8px;
+          background: #eaf8ef;
+          color: #176b39;
+        ">
+          <strong>Estoque em dia!</strong>
+          <p style="margin: 5px 0 0">
+            Nenhum produto ativo com estoque baixo ou zerado.
+          </p>
+        </div>
+      `;
+      return;
+    }
+
+    let conteudo = `
+      <div style="
+        padding: 12px;
+        margin: 12px 0;
+        border: 1px solid #d99b28;
+        border-radius: 8px;
+        background: #fff8e8;
+        color: #49370d;
+      ">
+        <strong>⚠️ Atenção ao estoque</strong>
+        <p style="margin: 8px 0">
+          ${alertas.zerados.length} produto(s) zerado(s) |
+          ${alertas.baixos.length} produto(s) com estoque baixo.
+        </p>
+    `;
+
+    if (alertas.zerados.length) {
+      conteudo += `
+        <div style="
+          padding: 8px;
+          margin-top: 8px;
+          border-radius: 6px;
+          background: #fdeaea;
+          color: #a32323;
+        ">
+          <strong>🔴 Estoque zerado</strong>
+          <ul style="margin: 6px 0 0; padding-left: 20px">
+            ${alertas.zerados.map(produto => `
+              <li>
+                ${escapar(produto.nome)}
+                — saldo: ${escapar(produto.estoque)}
+              </li>
+            `).join("")}
+          </ul>
+        </div>
+      `;
+    }
+
+    if (alertas.baixos.length) {
+      conteudo += `
+        <div style="
+          padding: 8px;
+          margin-top: 8px;
+          border-radius: 6px;
+          background: #fff0c9;
+          color: #765000;
+        ">
+          <strong>🟡 Estoque baixo</strong>
+          <ul style="margin: 6px 0 0; padding-left: 20px">
+            ${alertas.baixos.map(produto => `
+              <li>
+                ${escapar(produto.nome)}
+                — saldo: ${escapar(produto.estoque)}
+                — mínimo: ${escapar(produto.estoque_minimo)}
+              </li>
+            `).join("")}
+          </ul>
+        </div>
+      `;
+    }
+
+    if (temPermissao("administrador")) {
+      conteudo += `
+        <button id="abrirEstoqueAlertas">
+          Abrir controle de estoque
+        </button>
+      `;
+    }
+
+    conteudo += "</div>";
+
+    area.innerHTML = conteudo;
+
+    const botao = document.querySelector("#abrirEstoqueAlertas");
+
+    if (botao) {
+      botao.onclick = mostrarEstoque;
+    }
+  }
+
+  // INICIALIZAÇÃO
 
   async function iniciar() {
     painel = document.querySelector(".painel");
@@ -348,6 +479,8 @@
       <p>Bem-vindo, ${escapar(perfilAtual.nome)}</p>
       <p>Perfil: ${escapar(perfilAtual.funcao)}</p>
 
+      <div id="alertasEstoqueInicio"></div>
+
       <button id="mesas">Controle de mesas</button>
       ${temPermissao("administrador")
         ? '<button id="produtos">Produtos</button><button id="estoque">Estoque</button>' : ""}
@@ -370,6 +503,8 @@
       document.querySelector("#contas").onclick =
         carregarContasAguardando;
     }
+
+    atualizarAvisosInicio();
   }
 
   async function sair() {
@@ -393,6 +528,7 @@
   async function atualizarTudo() {
     await carregarProdutos();
     await carregarMesas();
+    atualizarAvisosInicio();
     mostrarMesas();
   }
 
@@ -407,6 +543,7 @@
     if (error) throw error;
 
     produtos = data || [];
+    atualizarAvisosInicio();
   }
 
   function mostrarProdutos() {
@@ -1510,6 +1647,7 @@
 
       mensagem("Pagamento registrado.");
 
+      await carregarProdutos();
       await carregarMesas();
       await carregarContasAguardando();
 
@@ -1586,6 +1724,48 @@
           } catch (erro) {
             console.error(
               "Erro ao atualizar itens em tempo real:",
+              erro
+            );
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "produtos" },
+        async () => {
+          try {
+            await carregarProdutos();
+
+            if (document.querySelector("#lista")) {
+              renderizarListaProdutos();
+            }
+
+            if (document.querySelector("#listaEstoque")) {
+              mostrarEstoque();
+            }
+
+          } catch (erro) {
+            console.error(
+              "Erro ao atualizar produtos em tempo real:",
+              erro
+            );
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "movimentacoes_estoque" },
+        async () => {
+          try {
+            await carregarProdutos();
+
+            if (document.querySelector("#listaEstoque")) {
+              mostrarEstoque();
+            }
+
+          } catch (erro) {
+            console.error(
+              "Erro ao atualizar estoque em tempo real:",
               erro
             );
           }
