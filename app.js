@@ -1,6 +1,7 @@
+
 /* =====================================================
    LIGEIRINHO PDV
-   Reconstrução da aplicação
+   Cadastro de produtos aprimorado
    ===================================================== */
 
 (() => {
@@ -413,36 +414,192 @@
 
     painel.innerHTML = `
       <h2>Produtos</h2>
+
       <button id="novo">Novo produto</button>
       <button id="voltar">Voltar</button>
+
+      <label for="pesquisaProduto">Pesquisar produto</label>
+      <input id="pesquisaProduto"
+        placeholder="Digite nome ou código">
+
+      <label for="filtroCategoria">Categoria</label>
+      <select id="filtroCategoria">
+        <option value="">Todas as categorias</option>
+      </select>
+
+      <label for="filtroStatus">Situação</label>
+      <select id="filtroStatus">
+        <option value="ativos">Produtos ativos</option>
+        <option value="inativos">Produtos inativos</option>
+        <option value="todos">Todos os produtos</option>
+      </select>
+
+      <div id="resumoProdutos"></div>
       <div id="lista"></div>
     `;
 
     document.querySelector("#novo").onclick = () => formularioProduto();
     document.querySelector("#voltar").onclick = mostrarInicio;
 
-    const lista = document.querySelector("#lista");
+    const categorias = [
+      ...new Set(
+        produtos
+          .map(p => p.categoria)
+          .filter(Boolean)
+      )
+    ].sort((a, b) => a.localeCompare(b, "pt-BR"));
 
-    if (!produtos.length) {
-      lista.textContent = "Nenhum produto cadastrado.";
+    const filtroCategoria = document.querySelector("#filtroCategoria");
+
+    categorias.forEach(categoria => {
+      const opcao = document.createElement("option");
+      opcao.value = categoria;
+      opcao.textContent = categoria;
+      filtroCategoria.appendChild(opcao);
+    });
+
+    document.querySelector("#pesquisaProduto").oninput =
+      renderizarListaProdutos;
+
+    filtroCategoria.onchange = renderizarListaProdutos;
+
+    document.querySelector("#filtroStatus").onchange =
+      renderizarListaProdutos;
+
+    renderizarListaProdutos();
+  }
+
+  function renderizarListaProdutos() {
+    const lista = document.querySelector("#lista");
+    const resumo = document.querySelector("#resumoProdutos");
+
+    if (!lista || !resumo) return;
+
+    lista.innerHTML = "";
+
+    const pesquisa = document.querySelector("#pesquisaProduto")
+      .value.trim().toLocaleLowerCase("pt-BR");
+
+    const categoria = document.querySelector("#filtroCategoria").value;
+    const status = document.querySelector("#filtroStatus").value;
+
+    let filtrados = [...produtos];
+
+    if (status === "ativos") {
+      filtrados = filtrados.filter(p => p.ativo);
+    } else if (status === "inativos") {
+      filtrados = filtrados.filter(p => !p.ativo);
+    }
+
+    if (categoria) {
+      filtrados = filtrados.filter(p => p.categoria === categoria);
+    }
+
+    if (pesquisa) {
+      filtrados = filtrados.filter(p => {
+        const nome = String(p.nome || "").toLocaleLowerCase("pt-BR");
+        const codigo = String(p.codigo || "").toLocaleLowerCase("pt-BR");
+
+        return nome.includes(pesquisa) || codigo.includes(pesquisa);
+      });
+    }
+
+    const ativos = produtos.filter(p => p.ativo).length;
+    const inativos = produtos.filter(p => !p.ativo).length;
+
+    resumo.textContent =
+      `Total: ${produtos.length} | Ativos: ${ativos} | Inativos: ${inativos} | Encontrados: ${filtrados.length}`;
+
+    if (!filtrados.length) {
+      lista.textContent = "Nenhum produto encontrado.";
       return;
     }
 
-    produtos.forEach(produto => {
+    filtrados.forEach(produto => {
       const linha = document.createElement("div");
       linha.className = "item-pedido";
 
-      const texto = document.createElement("span");
+      const texto = document.createElement("div");
+
       texto.textContent =
-        `${produto.nome} — ${dinheiro(produto.preco_venda)} — Estoque: ${produto.estoque}`;
+        `${produto.nome} — ${dinheiro(produto.preco_venda)} — Custo: ${dinheiro(produto.custo)} — Estoque: ${produto.estoque} — Mínimo: ${produto.estoque_minimo} — ${produto.categoria} — ${produto.ativo ? "ATIVO" : "INATIVO"}`;
 
       const editar = document.createElement("button");
       editar.textContent = "Editar";
       editar.onclick = () => formularioProduto(produto);
 
-      linha.append(texto, editar);
+      const alternar = document.createElement("button");
+      alternar.textContent = produto.ativo
+        ? "Desativar"
+        : "Reativar";
+
+      alternar.onclick = () => alterarStatusProduto(produto);
+
+      linha.append(texto, editar, alternar);
       lista.appendChild(linha);
     });
+  }
+
+  async function verificarCodigoDuplicado(codigo, produtoAtual = null) {
+    if (!codigo) return false;
+
+    const codigoNormalizado = codigo.trim().toLocaleLowerCase("pt-BR");
+
+    const duplicadoNaLista = produtos.some(p =>
+      String(p.codigo || "").trim().toLocaleLowerCase("pt-BR") ===
+        codigoNormalizado &&
+      p.id !== produtoAtual?.id
+    );
+
+    if (duplicadoNaLista) return true;
+
+    let consulta = supabase
+      .from("produtos")
+      .select("id")
+      .ilike("codigo", codigo.trim());
+
+    if (produtoAtual?.id) {
+      consulta = consulta.neq("id", produtoAtual.id);
+    }
+
+    const { data, error } = await consulta.limit(1);
+
+    if (error) throw error;
+
+    return (data || []).length > 0;
+  }
+
+  async function alterarStatusProduto(produto) {
+    if (!exigirAdministrador()) return;
+
+    const novoStatus = !produto.ativo;
+
+    const confirmacao = novoStatus
+      ? `Deseja reativar o produto "${produto.nome}"?`
+      : `Deseja desativar o produto "${produto.nome}"? Ele deixará de aparecer nos novos pedidos.`;
+
+    if (!confirm(confirmacao)) return;
+
+    try {
+      const { error } = await supabase
+        .from("produtos")
+        .update({ ativo: novoStatus })
+        .eq("id", produto.id);
+
+      if (error) throw error;
+
+      await carregarProdutos();
+      mostrarProdutos();
+
+      mensagem(
+        novoStatus
+          ? "Produto reativado."
+          : "Produto desativado."
+      );
+
+    } catch (erro) {
+      mostrarErro("Não foi possível alterar a situação do produto.", erro);
+    }
   }
 
   function formularioProduto(produto = null) {
@@ -459,13 +616,13 @@
     painel.innerHTML = `
       <h2>${produto ? "Editar produto" : "Novo produto"}</h2>
 
-      <label>Código</label>
-      <input id="codigo">
+      <label for="codigo">Código</label>
+      <input id="codigo" autocomplete="off">
 
-      <label>Nome</label>
-      <input id="nome">
+      <label for="nome">Nome</label>
+      <input id="nome" autocomplete="off">
 
-      <label>Categoria</label>
+      <label for="categoria">Categoria</label>
       <select id="categoria">
         <option value="">Selecione</option>
         ${categorias.map(c =>
@@ -473,20 +630,29 @@
         ).join("")}
       </select>
 
-      <label>Preço de venda</label>
+      <label for="preco">Preço de venda</label>
       <input id="preco" type="number" min="0" step="0.01">
 
-      <label>Custo</label>
+      <label for="custo">Custo</label>
       <input id="custo" type="number" min="0" step="0.01">
 
-      <label>${produto ? "Estoque atual (alterado em Movimentações)" : "Estoque inicial"}</label>
-      <input id="estoque" type="number" min="0" step="0.001" ${produto ? "readonly" : ""}>
+      <label for="estoque">
+        ${produto ? "Estoque atual (alterado em Movimentações)" : "Estoque inicial"}
+      </label>
+      <input id="estoque" type="number" min="0" step="0.001"
+        ${produto ? "readonly" : ""}>
 
-      <label>Estoque mínimo</label>
+      <label for="minimo">Estoque mínimo</label>
       <input id="minimo" type="number" min="0" step="0.001">
+
+      ${produto ? `
+        <p>Situação atual: ${produto.ativo ? "Ativo" : "Inativo"}</p>
+      ` : ""}
 
       <button id="salvar">Salvar</button>
       <button id="cancelar">Voltar</button>
+
+      <p id="avisoProduto"></p>
     `;
 
     if (produto) {
@@ -512,39 +678,84 @@
       categoria: document.querySelector("#categoria").value,
       preco_venda: Number(document.querySelector("#preco").value),
       custo: Number(document.querySelector("#custo").value || 0),
-      estoque_minimo: Number(document.querySelector("#minimo").value || 0),
-      ativo: true
+      estoque_minimo: Number(document.querySelector("#minimo").value || 0)
     };
 
-    const estoqueInicial = Number(document.querySelector("#estoque").value || 0);
+    const estoqueInicial = Number(
+      document.querySelector("#estoque").value || 0
+    );
+
+    const aviso = document.querySelector("#avisoProduto");
+    const botao = document.querySelector("#salvar");
 
     if (!registro.nome || !registro.categoria ||
-        !Number.isFinite(registro.preco_venda) || registro.preco_venda < 0 ||
-        !Number.isFinite(registro.custo) || registro.custo < 0 ||
-        !Number.isFinite(registro.estoque_minimo) || registro.estoque_minimo < 0 ||
-        (!produto && (!Number.isFinite(estoqueInicial) || estoqueInicial < 0))) {
-      mensagem("Confira nome, categoria, preço, custo e quantidades.");
+        !Number.isFinite(registro.preco_venda) ||
+        registro.preco_venda < 0 ||
+        !Number.isFinite(registro.custo) ||
+        registro.custo < 0 ||
+        !Number.isFinite(registro.estoque_minimo) ||
+        registro.estoque_minimo < 0 ||
+        (!produto &&
+          (!Number.isFinite(estoqueInicial) || estoqueInicial < 0))) {
+      aviso.textContent =
+        "Confira nome, categoria, preço, custo e quantidades.";
       return;
     }
 
+    botao.disabled = true;
+    botao.textContent = "Salvando...";
+
     try {
+      if (registro.codigo) {
+        const duplicado = await verificarCodigoDuplicado(
+          registro.codigo,
+          produto
+        );
+
+        if (duplicado) {
+          aviso.textContent =
+            "Já existe outro produto cadastrado com esse código.";
+          botao.disabled = false;
+          botao.textContent = "Salvar";
+          return;
+        }
+      }
+
       let resultado;
 
       if (produto) {
-        resultado = await supabase.from("produtos")
-          .update(registro).eq("id", produto.id);
+        resultado = await supabase
+          .from("produtos")
+          .update(registro)
+          .eq("id", produto.id);
       } else {
-        resultado = await supabase.from("produtos")
-          .insert({ ...registro, estoque: estoqueInicial });
+        resultado = await supabase
+          .from("produtos")
+          .insert({
+            ...registro,
+            estoque: estoqueInicial,
+            ativo: true
+          });
       }
 
       if (resultado.error) throw resultado.error;
 
       await carregarProdutos();
       mostrarProdutos();
-      mensagem("Produto salvo.");
+
+      mensagem(
+        produto
+          ? "Produto atualizado com sucesso."
+          : "Produto cadastrado com sucesso."
+      );
+
     } catch (erro) {
       mostrarErro("Não foi possível salvar o produto.", erro);
+
+      if (document.querySelector("#salvar")) {
+        botao.disabled = false;
+        botao.textContent = "Salvar";
+      }
     }
   }
 
@@ -921,8 +1132,6 @@
 
   async function abrirMesa(mesa) {
     try {
-      // O banco vincula o pedido automaticamente ao usuário autenticado.
-      // Administrador, caixa e garçom não precisam informar outro responsável.
       const { error } = await supabase.rpc("abrir_mesa", {
         p_mesa_id: mesa.id
       });
@@ -977,7 +1186,7 @@
       <select id="produto">
         <option value="">Selecione</option>
         ${produtos.filter(p => p.ativo).map(p =>
-          `<option value="${p.id}">${escapar(p.nome)} — ${dinheiro(p.preco_venda)}</option>`
+          `<option value="${escapar(p.id)}">${escapar(p.nome)} — ${dinheiro(p.preco_venda)}</option>`
         ).join("")}
       </select>
 
@@ -1368,7 +1577,7 @@
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "itens_pedido" },
-        async payload => {
+        async () => {
           try {
             if (pedidoAtual?.id) {
               await atualizarPedidoAtual();
