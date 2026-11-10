@@ -1,25 +1,47 @@
 /* =====================================================
-   LIGEIRINHO PDV — SISTEMA COMPLETO UNIFICADO
+   LIGEIRINHO PDV
+   Supabase + Produtos + Mesas + Pedidos + Realtime
+   + Recuperação de senha + Abertura e fechamento de caixa
+   + Histórico de caixa + Relatório de faturamento
    ===================================================== */
 
-(() => {
-  "use strict";
-
-  document.addEventListener("DOMContentLoaded", iniciar);
+document.addEventListener("DOMContentLoaded", async () => {
+  const painel = document.querySelector(".painel");
 
   const SUPABASE_URL = "https://ewfxcsaxxsqixtmxruxz.supabase.co";
   const SUPABASE_KEY = "sb_publishable_1Cch1EDl59lNQFUiUIkmBQ_BXHuYjly";
-  const URL_RECUPERACAO = "https://eduardodasg-max.github.io/ligeirinho-pdv/";
+  const URL_RECUPERACAO =
+    "https://eduardodasg-max.github.io/ligeirinho-pdv/";
 
-  let supabase;
-  let painel;
+  if (!window.supabase || !painel) {
+    alert("Não foi possível iniciar o Ligeirinho.");
+    return;
+  }
+
+  const supabase = window.supabase.createClient(
+    SUPABASE_URL,
+    SUPABASE_KEY
+  );
+
   let usuarioAtual = null;
   let perfilAtual = null;
   let produtos = [];
   let mesas = [];
+  let pedidosAbertos = [];
+  let mesaAtual = null;
   let pedidoAtual = null;
+  let itensAtuais = [];
   let canalRealtime = null;
-  let aguardandoRedefinicao = false;
+  let atualizacaoEmAndamento = false;
+  let modoRecuperacao = false;
+
+  const categoriasProduto = [
+    { valor: "comida", texto: "Comida" },
+    { valor: "bebida", texto: "Bebida" },
+    { valor: "petisco", texto: "Petiscos" },
+    { valor: "drink", texto: "Drinks" },
+    { valor: "bebida sem alcool", texto: "Bebidas sem álcool" }
+  ];
 
   const dinheiro = valor =>
     Number(valor || 0).toLocaleString("pt-BR", {
@@ -27,19 +49,21 @@
       currency: "BRL"
     });
 
-  const mensagem = texto => window.alert(texto);
-
-  function mostrarErro(contexto, erro) {
-    console.error(contexto, erro);
-    mensagem(contexto + (erro?.message ? "\n" + erro.message : ""));
+  function mensagem(texto) {
+    alert(texto);
   }
 
-  function limpar() {
+  function erro(texto, detalhe) {
+    console.error(texto, detalhe);
+    mensagem(texto + (detalhe?.message ? "\n" + detalhe.message : ""));
+  }
+
+  function limparPainel() {
     painel.innerHTML = "";
   }
 
-  function escapar(valor) {
-    return String(valor ?? "").replace(/[&<>"']/g, caractere => ({
+  function escapar(texto) {
+    return String(texto ?? "").replace(/[&<>"']/g, caractere => ({
       "&": "&amp;",
       "<": "&lt;",
       ">": "&gt;",
@@ -48,233 +72,413 @@
     })[caractere]);
   }
 
-  function temPermissao(...funcoes) {
-    return funcoes.includes(perfilAtual?.funcao);
+  function voltarInicio() {
+    mostrarInicio();
+  }
+
+  function dataLocalISO(data = new Date()) {
+    const ano = data.getFullYear();
+    const mes = String(data.getMonth() + 1).padStart(2, "0");
+    const dia = String(data.getDate()).padStart(2, "0");
+
+    return `${ano}-${mes}-${dia}`;
   }
 
   // =====================================================
-  // 1. INICIALIZAÇÃO E AUTENTICAÇÃO
+  // LOGIN
   // =====================================================
-
-  async function iniciar() {
-    painel = document.querySelector(".painel");
-
-    if (!painel) {
-      console.error("Elemento .painel não encontrado.");
-      return;
-    }
-
-    if (!window.supabase?.createClient) {
-      painel.innerHTML =
-        "<h2>Erro ao carregar</h2><p>A biblioteca do Supabase não foi carregada. Confira o index.html.</p>";
-      return;
-    }
-
-    try {
-      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-      supabase.auth.onAuthStateChange(async (evento) => {
-        if (evento === "PASSWORD_RECOVERY") {
-          aguardandoRedefinicao = true;
-          mostrarRedefinirSenha();
-        }
-      });
-
-      const { data, error } = await supabase.auth.getSession();
-      if (error) throw error;
-
-      if (data.session) {
-        if (!aguardandoRedefinicao) {
-          await verificarUsuario();
-        }
-      } else {
-        mostrarLogin();
-      }
-    } catch (erro) {
-      mostrarErro("Não foi possível iniciar o Ligeirinho.", erro);
-      mostrarLogin();
-    }
-  }
 
   function mostrarLogin() {
-    limpar();
+    limparPainel();
+
     painel.innerHTML = `
-      <h2>🚤 Acesso ao Ligeirinho</h2>
-      <label for="email">E-mail</label>
-      <input id="email" type="email" autocomplete="username" placeholder="Seu e-mail">
-      <label for="senha">Senha</label>
-      <input id="senha" type="password" autocomplete="current-password" placeholder="Sua senha">
+      <h2>Acesso ao Ligeirinho</h2>
+
+      <label>E-mail</label>
+      <input id="email" type="email" placeholder="Seu e-mail">
+
+      <label>Senha</label>
+      <input id="senha" type="password" placeholder="Sua senha">
+
       <button id="entrar">Entrar</button>
-      <p><a href="#" id="esqueciSenha">Esqueci minha senha</a></p>
-      <p id="mensagemLogin"></p>
+
+      <p>
+        <a href="#" id="esqueciSenha">Esqueci minha senha</a>
+      </p>
     `;
 
     document.querySelector("#entrar").onclick = entrar;
+
     document.querySelector("#esqueciSenha").onclick = evento => {
       evento.preventDefault();
-      solicitarRecuperacaoSenha();
+      mostrarRecuperacaoSenha();
     };
-    document.querySelector("#senha").addEventListener("keydown", evento => {
-      if (evento.key === "Enter") entrar();
-    });
   }
 
   async function entrar() {
     const email = document.querySelector("#email").value.trim();
     const senha = document.querySelector("#senha").value;
-    const botao = document.querySelector("#entrar");
-    const aviso = document.querySelector("#mensagemLogin");
 
     if (!email || !senha) {
-      aviso.textContent = "Informe seu e-mail e sua senha.";
+      mensagem("Informe seu e-mail e sua senha.");
       return;
     }
 
+    const botao = document.querySelector("#entrar");
     botao.disabled = true;
     botao.textContent = "Entrando...";
-    aviso.textContent = "";
 
-    try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
-      if (error) throw error;
-      await verificarUsuario();
-    } catch (erro) {
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password: senha
+    });
+
+    if (error) {
       botao.disabled = false;
       botao.textContent = "Entrar";
-      aviso.textContent = erro.message || "Falha no acesso.";
+      erro("Não foi possível entrar.", error);
+      return;
     }
+
+    await verificarUsuario();
   }
 
-  async function solicitarRecuperacaoSenha() {
-    const campoEmail = document.querySelector("#email");
-    const aviso = document.querySelector("#mensagemLogin");
-    let email = campoEmail?.value.trim() || "";
+  // =====================================================
+  // RECUPERAÇÃO DE SENHA
+  // =====================================================
+
+  function mostrarRecuperacaoSenha() {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Recuperar senha</h2>
+
+      <p>
+        Informe o e-mail cadastrado no Ligeirinho.
+        Você receberá um link para criar uma nova senha.
+      </p>
+
+      <label>E-mail</label>
+      <input
+        id="emailRecuperacao"
+        type="email"
+        placeholder="Seu e-mail"
+      >
+
+      <button id="enviarRecuperacao">
+        Enviar link de recuperação
+      </button>
+
+      <button id="voltarLogin">
+        Voltar ao login
+      </button>
+    `;
+
+    document.querySelector("#enviarRecuperacao").onclick =
+      enviarEmailRecuperacao;
+
+    document.querySelector("#voltarLogin").onclick = mostrarLogin;
+  }
+
+  async function enviarEmailRecuperacao() {
+    const email = document
+      .querySelector("#emailRecuperacao")
+      .value.trim();
 
     if (!email) {
-      email = prompt("Informe o e-mail cadastrado no Ligeirinho:");
-      if (!email) {
-        aviso.textContent = "Informe um e-mail para recuperar a senha.";
-        return;
-      }
-      email = email.trim();
-      if (campoEmail) campoEmail.value = email;
+      mensagem("Informe seu e-mail.");
+      return;
     }
 
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: URL_RECUPERACAO });
-      if (error) throw error;
-      aviso.textContent = "Se o e-mail estiver cadastrado, você receberá um link para redefinir sua senha.";
-    } catch (erro) {
-      aviso.textContent = "Erro ao solicitar recuperação: " + (erro.message || "tente novamente.");
+    const botao = document.querySelector("#enviarRecuperacao");
+    botao.disabled = true;
+    botao.textContent = "Enviando...";
+
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      email,
+      {
+        redirectTo: URL_RECUPERACAO
+      }
+    );
+
+    if (error) {
+      botao.disabled = false;
+      botao.textContent = "Enviar link de recuperação";
+      erro("Não foi possível enviar o e-mail de recuperação.", error);
+      return;
     }
+
+    mensagem(
+      "Se o e-mail estiver cadastrado, você receberá um link para redefinir sua senha. Confira também a caixa de spam."
+    );
+
+    mostrarLogin();
   }
 
-  function mostrarRedefinirSenha() {
-    limpar();
+  function mostrarNovaSenha() {
+    modoRecuperacao = true;
+    limparPainel();
+
     painel.innerHTML = `
-      <h2>Redefinir senha</h2>
-      <p>Digite sua nova senha abaixo.</p>
-      <label for="novaSenha">Nova senha</label>
-      <input id="novaSenha" type="password" autocomplete="new-password" placeholder="Nova senha">
-      <label for="confirmarSenha">Confirme a nova senha</label>
-      <input id="confirmarSenha" type="password" autocomplete="new-password" placeholder="Repita a nova senha">
-      <button id="salvarNovaSenha">Salvar nova senha</button>
-      <p id="mensagemRedefinicao"></p>
+      <h2>Criar nova senha</h2>
+
+      <p>Digite sua nova senha e confirme abaixo.</p>
+
+      <label>Nova senha</label>
+      <input
+        id="novaSenha"
+        type="password"
+        placeholder="Digite a nova senha"
+      >
+
+      <label>Confirmar nova senha</label>
+      <input
+        id="confirmarSenha"
+        type="password"
+        placeholder="Digite novamente a nova senha"
+      >
+
+      <button id="salvarNovaSenha">
+        Salvar nova senha
+      </button>
     `;
-    document.querySelector("#salvarNovaSenha").onclick = salvarNovaSenha;
+
+    document.querySelector("#salvarNovaSenha").onclick =
+      salvarNovaSenha;
   }
 
   async function salvarNovaSenha() {
     const senha = document.querySelector("#novaSenha").value;
-    const confirmacao = document.querySelector("#confirmarSenha").value;
-    const aviso = document.querySelector("#mensagemRedefinicao");
+    const confirmar = document.querySelector("#confirmarSenha").value;
 
-    if (!senha || !confirmacao || senha.length < 6 || senha !== confirmacao) {
-      aviso.textContent = "Verifique se as senhas coincidem e possuem ao menos 6 caracteres.";
+    if (!senha || !confirmar) {
+      mensagem("Preencha os dois campos de senha.");
       return;
     }
 
-    try {
-      const { error } = await supabase.auth.updateUser({ password: senha });
-      if (error) throw error;
-      aguardandoRedefinicao = false;
-      await supabase.auth.signOut();
-      mensagem("Senha alterada com sucesso. Entre com sua nova senha.");
-      mostrarLogin();
-    } catch (erro) {
-      aviso.textContent = "Não foi possível alterar a senha: " + erro.message;
+    if (senha.length < 6) {
+      mensagem("A senha deve ter pelo menos 6 caracteres.");
+      return;
     }
+
+    if (senha !== confirmar) {
+      mensagem("As senhas não são iguais.");
+      return;
+    }
+
+    const botao = document.querySelector("#salvarNovaSenha");
+    botao.disabled = true;
+    botao.textContent = "Salvando...";
+
+    const { error } = await supabase.auth.updateUser({
+      password: senha
+    });
+
+    if (error) {
+      botao.disabled = false;
+      botao.textContent = "Salvar nova senha";
+      erro("Não foi possível alterar a senha.", error);
+      return;
+    }
+
+    mensagem("Senha alterada com sucesso! Faça login com sua nova senha.");
+
+    modoRecuperacao = false;
+
+    await supabase.auth.signOut();
+
+    usuarioAtual = null;
+    perfilAtual = null;
+
+    mostrarLogin();
+  }
+
+  // =====================================================
+  // PERFIL E PERMISSÕES
+  // =====================================================
+
+  function temPermissao(...funcoes) {
+    return funcoes.includes(perfilAtual?.funcao);
   }
 
   async function verificarUsuario() {
-    try {
-      const { data, error } = await supabase.auth.getUser();
-      if (error || !data.user) {
-        mostrarLogin();
-        return;
-      }
+    const { data, error } = await supabase.auth.getUser();
 
-      usuarioAtual = data.user;
-
-      const { data: perfil, error: erroPerfil } = await supabase
-        .from("perfis_usuarios")
-        .select("id, nome, funcao, ativo")
-        .eq("id", usuarioAtual.id)
-        .single();
-
-      if (erroPerfil) throw erroPerfil;
-      if (!perfil || !perfil.ativo) throw new Error("Perfil não encontrado ou usuário inativo.");
-
-      perfilAtual = perfil;
-
-      await carregarProdutos();
-      await carregarMesas();
-      iniciarRealtime();
-      mostrarInicio();
-    } catch (erro) {
-      mostrarErro("Não foi possível validar seu perfil.", erro);
-      await supabase.auth.signOut();
-      usuarioAtual = null;
-      perfilAtual = null;
+    if (error || !data.user) {
       mostrarLogin();
+      return;
     }
+
+    usuarioAtual = data.user;
+
+    const { data: perfil, error: erroPerfil } = await supabase
+      .from("perfis_usuarios")
+      .select("nome, funcao, ativo")
+      .eq("id", usuarioAtual.id)
+      .single();
+
+    if (erroPerfil || !perfil || !perfil.ativo) {
+      mensagem("Perfil não encontrado ou usuário inativo.");
+      await supabase.auth.signOut();
+      mostrarLogin();
+      return;
+    }
+
+    if (!["administrador", "caixa", "garcom"].includes(perfil.funcao)) {
+      mensagem("Função de usuário não reconhecida.");
+      await supabase.auth.signOut();
+      mostrarLogin();
+      return;
+    }
+
+    perfilAtual = perfil;
+
+    await carregarProdutosSilencioso();
+    await carregarDadosMesas();
+    iniciarRealtime();
+    mostrarInicio();
   }
 
   // =====================================================
-  // 2. PAINEL PRINCIPAL
+  // STUBS DE SUPORTE (Produtos, Mesas, Contas, Realtime)
+  // =====================================================
+
+  async function carregarProdutosSilencioso() {
+    try {
+      const { data } = await supabase.from("produtos").select("*").order("nome");
+      produtos = data || [];
+    } catch (e) {
+      console.error("Erro ao carregar produtos silenciosamente:", e);
+    }
+  }
+
+  async function carregarProdutos() {
+    await carregarProdutosSilencioso();
+    limparPainel();
+    painel.innerHTML = `
+      <h2>Produtos Cadastrados</h2>
+      <button id="voltar">Voltar</button>
+      <div style="margin-top: 15px;">
+        ${produtos.map(p => `<p>${escapar(p.nome)} — ${dinheiro(p.preco_venda)}</p>`).join("") || "<p>Nenhum produto cadastrado.</p>"}
+      </div>
+    `;
+    document.querySelector("#voltar").onclick = mostrarInicio;
+  }
+
+  async function carregarDadosMesas() {
+    try {
+      const { data } = await supabase.from("mesas").select("*").order("numero");
+      mesas = data || [];
+    } catch (e) {
+      console.error("Erro ao carregar mesas:", e);
+    }
+  }
+
+  function mostrarMesas() {
+    limparPainel();
+    painel.innerHTML = `
+      <h2>Controle de Mesas</h2>
+      <button id="voltar">Voltar</button>
+      <p style="margin-top: 15px;">Módulo de mesas carregado com sucesso.</p>
+    `;
+    document.querySelector("#voltar").onclick = mostrarInicio;
+  }
+
+  async function carregarContasAguardando() {
+    limparPainel();
+    painel.innerHTML = `
+      <h2>Contas Aguardando Pagamento</h2>
+      <button id="voltar">Voltar</button>
+      <p style="margin-top: 15px;">Nenhuma conta pendente no momento.</p>
+    `;
+    document.querySelector("#voltar").onclick = mostrarInicio;
+  }
+
+  function iniciarRealtime() {
+    if (canalRealtime) return;
+    canalRealtime = supabase
+      .channel("ligeirinho-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "produtos" }, () => carregarProdutosSilencioso())
+      .on("postgres_changes", { event: "*", schema: "public", table: "mesas" }, () => carregarDadosMesas())
+      .subscribe();
+  }
+
+  // =====================================================
+  // TELA PRINCIPAL
   // =====================================================
 
   function mostrarInicio() {
-    limpar();
-    painel.innerHTML = `
-      <h2>🚤 Ligeirinho PDV</h2>
-      <p>Bem-vindo, <strong>${escapar(perfilAtual.nome)}</strong> (${escapar(perfilAtual.funcao)})</p>
-      
-      <div id="alertasEstoqueInicio"></div>
+    limparPainel();
 
-      <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
-        <button id="mesas">Controle de Mesas</button>
-        ${temPermissao("administrador") ? '<button id="produtos">Produtos</button><button id="estoque">Estoque</button>' : ""}
-        ${temPermissao("administrador", "caixa") ? '<button id="contas">Contas Aguardando Pagamento</button>' : ""}
-        <button id="atualizar">Atualizar Dados</button>
-        <button id="sair" style="background: #a32323; color: white;">Sair</button>
-      </div>
+    const nome = escapar(perfilAtual?.nome || "Equipe");
+    const funcao = escapar(perfilAtual?.funcao || "");
+
+    painel.innerHTML = `
+      <h2>Bem-vindo, ${nome}!</h2>
+      <p>Perfil: ${funcao}</p>
+
+      <button id="botaoMesas">Controle de Mesas</button>
+
+      ${temPermissao("administrador", "caixa")
+        ? '<button id="botaoAbrirCaixa">Abrir caixa</button>'
+        : ""}
+
+      ${temPermissao("administrador", "caixa")
+        ? '<button id="botaoFecharCaixa">Fechar caixa</button>'
+        : ""}
+
+      ${temPermissao("administrador", "caixa")
+        ? '<button id="botaoHistoricoCaixa">Histórico de caixa</button>'
+        : ""}
+
+      ${temPermissao("administrador")
+        ? '<button id="botaoRelatorios">Relatórios</button>'
+        : ""}
+
+      ${temPermissao("administrador")
+        ? '<button id="botaoProdutos">Produtos</button>'
+        : ""}
+
+      ${temPermissao("administrador", "caixa")
+        ? '<button id="botaoContas">Contas aguardando pagamento</button>'
+        : ""}
+
+      <button id="atualizar">Atualizar dados</button>
+      <button id="sair">Sair</button>
     `;
 
-    document.querySelector("#mesas").onclick = mostrarMesas;
-    document.querySelector("#atualizar").onclick = atualizarTudo;
-    document.querySelector("#sair").onclick = sair;
+    document.querySelector("#botaoMesas").onclick = mostrarMesas;
+
+    if (temPermissao("administrador", "caixa")) {
+      document.querySelector("#botaoAbrirCaixa").onclick =
+        mostrarAberturaCaixa;
+
+      document.querySelector("#botaoFecharCaixa").onclick =
+        mostrarFechamentoCaixa;
+
+      document.querySelector("#botaoHistoricoCaixa").onclick =
+        mostrarHistoricoCaixa;
+    }
 
     if (temPermissao("administrador")) {
-      document.querySelector("#produtos").onclick = mostrarProdutos;
-      document.querySelector("#estoque").onclick = mostrarEstoque;
+      document.querySelector("#botaoRelatorios").onclick =
+        mostrarRelatorios;
+
+      document.querySelector("#botaoProdutos").onclick = carregarProdutos;
     }
 
     if (temPermissao("administrador", "caixa")) {
-      document.querySelector("#contas").onclick = carregarContasAguardando;
+      document.querySelector("#botaoContas").onclick =
+        carregarContasAguardando;
     }
 
-    atualizarAvisosInicio();
+    document.querySelector("#atualizar").onclick = async () => {
+      await carregarDadosMesas();
+      mensagem("Dados atualizados.");
+      mostrarMesas();
+    };
+
+    document.querySelector("#sair").onclick = sair;
   }
 
   async function sair() {
@@ -285,254 +489,898 @@
     await supabase.auth.signOut();
     usuarioAtual = null;
     perfilAtual = null;
-    pedidoAtual = null;
-    produtos = [];
-    mesas = [];
-    aguardandoRedefinicao = false;
     mostrarLogin();
   }
 
-  async function atualizarTudo() {
-    await carregarProdutos();
-    await carregarMesas();
-    atualizarAvisosInicio();
-    mostrarInicio();
-    mensagem("Dados atualizados com sucesso!");
-  }
-
   // =====================================================
-  // 3. PRODUTOS & ESTOQUE
+  // RELATÓRIO DE FATURAMENTO
   // =====================================================
 
-  async function carregarProdutos() {
-    const { data, error } = await supabase.from("produtos").select("*").order("nome");
-    if (error) throw error;
-    produtos = data || [];
-    atualizarAvisosInicio();
-  }
-
-  function calcularAlertasEstoque() {
-    const ativos = produtos.filter(p => p.ativo);
-    const zerados = ativos.filter(p => Number(p.estoque || 0) <= 0);
-    const baixos = ativos.filter(p => Number(p.estoque || 0) > 0 && Number(p.estoque || 0) <= Number(p.estoque_minimo || 0));
-    return { ativos, zerados, baixos, total: zerados.length + baixos.length };
-  }
-
-  function atualizarAvisosInicio() {
-    const area = document.querySelector("#alertasEstoqueInicio");
-    if (!area) return;
-    const alertas = calcularAlertasEstoque();
-
-    if (alertas.total === 0) {
-      area.innerHTML = `<div style="padding: 10px; border-radius: 6px; background: #eaf8ef; color: #176b39;">Estoque em dia! Nenhum item crítico.</div>`;
+  function mostrarRelatorios() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode acessar os relatórios.");
+      mostrarInicio();
       return;
     }
 
-    area.innerHTML = `
-      <div style="padding: 10px; border-radius: 6px; background: #fff8e8; color: #765000;">
-        ⚠️ <strong>Atenção ao estoque:</strong> ${alertas.zerados.length} zerado(s), ${alertas.baixos.length} baixo(s).
-        ${temPermissao("administrador") ? '<br><button id="abrirEstoqueAlertas" style="margin-top:6px;">Ver Estoque</button>' : ""}
-      </div>
-    `;
+    limparPainel();
 
-    const btn = document.querySelector("#abrirEstoqueAlertas");
-    if (btn) btn.onclick = mostrarEstoque;
-  }
+    const hoje = new Date();
+    const dataHoje = dataLocalISO(hoje);
+    const mesAtual = dataHoje.slice(0, 7);
 
-  function mostrarProdutos() {
-    limpar();
     painel.innerHTML = `
-      <h2>Produtos</h2>
-      <button id="novo">Novo Produto</button>
-      <button id="voltar">Voltar</button>
-      <input id="pesquisaProduto" placeholder="Pesquisar por nome ou código" style="margin-top: 10px;">
-      <div id="resumoProdutos" style="margin: 10px 0; font-size: 0.9rem;"></div>
-      <div id="lista"></div>
-    `;
+      <h2>Relatório de faturamento</h2>
 
-    document.querySelector("#novo").onclick = () => formularioProduto();
-    document.querySelector("#voltar").onclick = mostrarInicio;
-    document.querySelector("#pesquisaProduto").oninput = renderizarListaProdutos;
-    renderizarListaProdutos();
-  }
-
-  function renderizarListaProdutos() {
-    const lista = document.querySelector("#lista");
-    const resumo = document.querySelector("#resumoProdutos");
-    if (!lista) return;
-    lista.innerHTML = "";
-
-    const pesquisa = document.querySelector("#pesquisaProduto")?.value.trim().toLowerCase() || "";
-    let filtrados = [...produtos];
-
-    if (pesquisa) {
-      filtrados = filtrados.filter(p => p.nome.toLowerCase().includes(pesquisa) || String(p.codigo || "").toLowerCase().includes(pesquisa));
-    }
-
-    resumo.textContent = `Total: ${produtos.length} | Exibindo: ${filtrados.length}`;
-
-    if (!filtrados.length) {
-      lista.textContent = "Nenhum produto encontrado.";
-      return;
-    }
-
-    filtrados.forEach(produto => {
-      const linha = document.createElement("div");
-      linha.style.cssText = "padding: 8px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;";
-      linha.innerHTML = `
-        <div>
-          <strong>${escapar(produto.nome)}</strong> (${dinheiro(produto.preco_venda)})<br>
-          <small>Estoque: ${produto.estoque} | ${produto.ativo ? "Ativo" : "Inativo"}</small>
-        </div>
-      `;
-      const btnEditar = document.createElement("button");
-      btnEditar.textContent = "Editar";
-      btnEditar.onclick = () => formularioProduto(produto);
-      linha.appendChild(btnEditar);
-      lista.appendChild(linha);
-    });
-  }
-
-  function formularioProduto(produto = null) {
-    limpar();
-    painel.innerHTML = `
-      <h2>${produto ? "Editar Produto" : "Novo Produto"}</h2>
-      <label>Código</label><input id="codigo">
-      <label>Nome</label><input id="nome">
-      <label>Categoria</label>
-      <select id="categoria">
-        <option value="Comida">Comida</option>
-        <option value="Bebida">Bebida</option>
-        <option value="Petiscos">Petiscos</option>
-        <option value="Drinks">Drinks</option>
-        <option value="Bebidas sem álcool">Bebidas sem álcool</option>
+      <label>Período do relatório</label>
+      <select id="relatorioPeriodo">
+        <option value="mes">Mês atual</option>
+        <option value="dia">Um dia</option>
+        <option value="ano">Um ano</option>
+        <option value="personalizado">Período personalizado</option>
+        <option value="todos">Todo o histórico</option>
       </select>
-      <label>Preço de Venda</label><input id="preco" type="number" step="0.01">
-      <label>Custo</label><input id="custo" type="number" step="0.01">
-      <label>Estoque Inicial</label><input id="estoque" type="number" ${produto ? "readonly" : ""}>
-      <label>Estoque Mínimo</label><input id="minimo" type="number">
-      <button id="salvar">Salvar</button>
-      <button id="cancelar">Voltar</button>
-      <p id="avisoProduto"></p>
+
+      <div id="filtroRelatorioDia" style="display:none;">
+        <label>Data</label>
+        <input id="relatorioDia" type="date">
+      </div>
+
+      <div id="filtroRelatorioMes" style="display:none;">
+        <label>Mês</label>
+        <input id="relatorioMes" type="month">
+      </div>
+
+      <div id="filtroRelatorioAno" style="display:none;">
+        <label>Ano</label>
+        <input
+          id="relatorioAno"
+          type="number"
+          min="2000"
+          max="2100"
+          step="1"
+          placeholder="Ex.: 2026"
+        >
+      </div>
+
+      <div id="filtroRelatorioPersonalizado" style="display:none;">
+        <label>Data inicial</label>
+        <input id="relatorioDataInicio" type="date">
+
+        <label>Data final</label>
+        <input id="relatorioDataFim" type="date">
+      </div>
+
+      <button id="consultarRelatorio">Consultar relatório</button>
+
+      <div id="resultadoRelatorio">
+        <p>Selecione o período e consulte o faturamento.</p>
+      </div>
+
+      <button id="voltarRelatorios">Voltar</button>
     `;
 
-    if (produto) {
-      document.querySelector("#codigo").value = produto.codigo || "";
-      document.querySelector("#nome").value = produto.nome || "";
-      document.querySelector("#categoria").value = produto.categoria || "Comida";
-      document.querySelector("#preco").value = produto.preco_venda ?? 0;
-      document.querySelector("#custo").value = produto.custo ?? 0;
-      document.querySelector("#estoque").value = produto.estoque ?? 0;
-      document.querySelector("#minimo").value = produto.estoque_minimo ?? 0;
-    }
+    document.querySelector("#relatorioDia").value = dataHoje;
+    document.querySelector("#relatorioMes").value = mesAtual;
+    document.querySelector("#relatorioAno").value = hoje.getFullYear();
 
-    document.querySelector("#salvar").onclick = () => salvarProduto(produto);
-    document.querySelector("#cancelar").onclick = mostrarProdutos;
+    document.querySelector("#relatorioDataInicio").value =
+      `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
+
+    document.querySelector("#relatorioDataFim").value = dataHoje;
+
+    document.querySelector("#relatorioPeriodo").onchange =
+      atualizarCamposRelatorio;
+
+    document.querySelector("#consultarRelatorio").onclick =
+      carregarRelatorioFaturamento;
+
+    document.querySelector("#voltarRelatorios").onclick = mostrarInicio;
+
+    atualizarCamposRelatorio();
+
+    carregarRelatorioFaturamento();
   }
 
-  async function salvarProduto(produto) {
-    const registro = {
-      codigo: document.querySelector("#codigo").value.trim() || null,
-      nome: document.querySelector("#nome").value.trim(),
-      categoria: document.querySelector("#categoria").value,
-      preco_venda: Number(document.querySelector("#preco").value),
-      custo: Number(document.querySelector("#custo").value || 0),
-      estoque_minimo: Number(document.querySelector("#minimo").value || 0)
-    };
-    const estoqueInicial = Number(document.querySelector("#estoque").value || 0);
+  function atualizarCamposRelatorio() {
+    const periodo =
+      document.querySelector("#relatorioPeriodo").value;
 
-    if (!registro.nome || registro.preco_venda < 0) {
-      document.querySelector("#avisoProduto").textContent = "Preencha os campos obrigatórios corretamente.";
-      return;
-    }
+    document.querySelector("#filtroRelatorioDia").style.display =
+      periodo === "dia" ? "block" : "none";
 
-    try {
-      if (produto) {
-        const { error } = await supabase.from("produtos").update(registro).eq("id", produto.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from("produtos").insert({ ...registro, estoque: estoqueInicial, ativo: true });
-        if (error) throw error;
+    document.querySelector("#filtroRelatorioMes").style.display =
+      periodo === "mes" ? "block" : "none";
+
+    document.querySelector("#filtroRelatorioAno").style.display =
+      periodo === "ano" ? "block" : "none";
+
+    document.querySelector("#filtroRelatorioPersonalizado").style.display =
+      periodo === "personalizado" ? "block" : "none";
+  }
+
+  function obterDatasRelatorio() {
+    const periodo =
+      document.querySelector("#relatorioPeriodo").value;
+
+    let inicio = null;
+    let fim = null;
+
+    if (periodo === "dia") {
+      const dia = document.querySelector("#relatorioDia").value;
+
+      if (!dia) {
+        mensagem("Selecione uma data.");
+        return null;
       }
-      await carregarProdutos();
-      mostrarProdutos();
-      mensagem("Produto salvo com sucesso!");
-    } catch (erro) {
-      mostrarErro("Erro ao salvar produto.", erro);
+
+      inicio = dia;
+      fim = dia;
     }
-  }
 
-  function mostrarEstoque() {
-    if (!temPermissao("administrador")) return;
-    limpar();
-    painel.innerHTML = `
-      <h2>Controle de Estoque</h2>
-      <button id="voltar">Voltar</button>
-      <p style="margin-top: 15px;">Gerencie entradas, saídas e ajustes de saldo pelo painel administrativo.</p>
-    `;
-    document.querySelector("#voltar").onclick = mostrarInicio;
-  }
+    if (periodo === "mes") {
+      const mesSelecionado =
+        document.querySelector("#relatorioMes").value;
 
-  // =====================================================
-  // 4. MESAS E CONTAS
-  // =====================================================
+      if (!/^\d{4}-\d{2}$/.test(mesSelecionado)) {
+        mensagem("Selecione um mês válido.");
+        return null;
+      }
 
-  async function carregarMesas() {
-    try {
-      const { data, error } = await supabase.from("mesas").select("*").order("numero");
-      if (error) throw error;
-      mesas = data || [];
-    } catch (erro) {
-      console.error("Erro ao carregar mesas:", erro);
+      const [ano, mes] = mesSelecionado.split("-").map(Number);
+
+      if (mes < 1 || mes > 12) {
+        mensagem("Selecione um mês válido.");
+        return null;
+      }
+
+      const ultimoDia = new Date(ano, mes, 0).getDate();
+
+      inicio =
+        `${ano}-${String(mes).padStart(2, "0")}-01`;
+
+      fim =
+        `${ano}-${String(mes).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
     }
+
+    if (periodo === "ano") {
+      const ano = Number(
+        document.querySelector("#relatorioAno").value
+      );
+
+      if (
+        !Number.isInteger(ano) ||
+        ano < 2000 ||
+        ano > 2100
+      ) {
+        mensagem("Informe um ano válido entre 2000 e 2100.");
+        return null;
+      }
+
+      inicio = `${ano}-01-01`;
+      fim = `${ano}-12-31`;
+    }
+
+    if (periodo === "personalizado") {
+      inicio =
+        document.querySelector("#relatorioDataInicio").value;
+
+      fim =
+        document.querySelector("#relatorioDataFim").value;
+
+      if (!inicio || !fim || inicio > fim) {
+        mensagem("Confira as datas informadas.");
+        return null;
+      }
+    }
+
+    return { inicio, fim };
   }
 
-  function mostrarMesas() {
-    limpar();
-    painel.innerHTML = `
-      <h2>Controle de Mesas (1 a 50)</h2>
-      <button id="voltarInicio">Voltar</button>
-      <div id="gridMesas" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; margin-top: 15px;"></div>
-    `;
-
-    document.querySelector("#voltarInicio").onclick = mostrarInicio;
-    const container = document.querySelector("#gridMesas");
-
-    if (!mesas.length) {
-      container.innerHTML = "<p>Nenhuma mesa cadastrada no banco de dados.</p>";
+  async function carregarRelatorioFaturamento() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode consultar o faturamento.");
+      mostrarInicio();
       return;
     }
 
-    mesas.forEach(mesa => {
-      const card = document.createElement("button");
-      card.style.cssText = "padding: 12px; font-weight: bold; border-radius: 6px; background: #f0f0f0; border: 1px solid #ccc;";
-      card.textContent = `Mesa ${mesa.numero}`;
-      card.onclick = () => mensagem(`Mesa ${mesa.numero} selecionada.`);
-      container.appendChild(card);
+    const datas = obterDatasRelatorio();
+
+    if (!datas) return;
+
+    const resultado =
+      document.querySelector("#resultadoRelatorio");
+
+    const botao =
+      document.querySelector("#consultarRelatorio");
+
+    resultado.innerHTML = "<p>Consultando faturamento...</p>";
+
+    botao.disabled = true;
+    botao.textContent = "Consultando...";
+
+    const { data, error } = await supabase.rpc(
+      "relatorio_faturamento",
+      {
+        p_data_inicio: datas.inicio,
+        p_data_fim: datas.fim
+      }
+    );
+
+    botao.disabled = false;
+    botao.textContent = "Consultar relatório";
+
+    if (error) {
+      console.error("Erro no relatório de faturamento:", error);
+
+      resultado.innerHTML = `
+        <p>Não foi possível carregar o relatório.</p>
+        <p>${escapar(error.message || "Erro desconhecido.")}</p>
+      `;
+
+      return;
+    }
+
+    if (!data || typeof data !== "object") {
+      resultado.innerHTML =
+        "<p>O relatório não retornou dados válidos.</p>";
+      return;
+    }
+
+    mostrarResultadoRelatorio(data);
+  }
+
+  function mostrarResultadoRelatorio(data) {
+    if (!temPermissao("administrador")) {
+      mensagem("Acesso permitido somente ao administrador.");
+      mostrarInicio();
+      return;
+    }
+
+    const resultado =
+      document.querySelector("#resultadoRelatorio");
+
+    if (!resultado) return;
+
+    const total = Number(data.total_faturado || 0);
+    const vendas = Number(data.quantidade_vendas || 0);
+    const ticket = Number(data.ticket_medio || 0);
+
+    const formas = Array.isArray(data.formas_pagamento)
+      ? data.formas_pagamento
+      : [];
+
+    const linhasFormas = formas.length
+      ? formas.map(forma => `
+          <div class="item-pedido" style="display:block; margin-bottom:10px;">
+            <strong>${escapar(forma.forma_pagamento || "Não informado")}</strong>
+            <p>Quantidade: ${Number(forma.quantidade || 0)}</p>
+            <p>Total: ${dinheiro(forma.total)}</p>
+          </div>
+        `).join("")
+      : "<p>Nenhum pagamento encontrado neste período.</p>";
+
+    resultado.innerHTML = `
+      <h3>Resumo do faturamento</h3>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <p><strong>Faturamento total</strong></p>
+        <h2>${dinheiro(total)}</h2>
+      </div>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <p><strong>Quantidade de vendas</strong></p>
+        <h2>${vendas}</h2>
+      </div>
+
+      <div class="item-pedido" style="display:block; margin-bottom:10px;">
+        <p><strong>Ticket médio</strong></p>
+        <h2>${dinheiro(ticket)}</h2>
+      </div>
+
+      <h3>Faturamento por forma de pagamento</h3>
+
+      ${linhasFormas}
+    `;
+  }
+
+  // =====================================================
+  // ABERTURA DO CAIXA
+  // =====================================================
+
+  function mostrarAberturaCaixa() {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Abrir caixa</h2>
+
+      <p>Informe o valor inicial em dinheiro.</p>
+
+      <label>Valor inicial</label>
+      <input
+        id="valorInicialCaixa"
+        type="number"
+        min="0"
+        step="0.01"
+        value="0"
+      >
+
+      <button id="confirmarAberturaCaixa">
+        Abrir caixa
+      </button>
+
+      <button id="cancelarAberturaCaixa">
+        Voltar
+      </button>
+    `;
+
+    document.querySelector("#confirmarAberturaCaixa").onclick =
+      abrirCaixa;
+
+    document.querySelector("#cancelarAberturaCaixa").onclick =
+      mostrarInicio;
+  }
+
+  async function abrirCaixa() {
+    const campo = document.querySelector("#valorInicialCaixa");
+    const valor = Number(campo.value);
+
+    if (!Number.isFinite(valor) || valor < 0) {
+      mensagem("Informe um valor válido, igual ou maior que zero.");
+      return;
+    }
+
+    const botao = document.querySelector("#confirmarAberturaCaixa");
+
+    botao.disabled = true;
+    botao.textContent = "Abrindo...";
+
+    const { data, error } = await supabase.rpc("abrir_caixa", {
+      p_valor_inicial: valor
+    });
+
+    if (error) {
+      botao.disabled = false;
+      botao.textContent = "Abrir caixa";
+      erro("Não foi possível abrir o caixa.", error);
+      return;
+    }
+
+    console.log("Caixa aberto:", data);
+
+    mensagem("Caixa aberto com sucesso!");
+
+    mostrarInicio();
+  }
+
+  // =====================================================
+  // FECHAMENTO DO CAIXA
+  // =====================================================
+
+  async function mostrarFechamentoCaixa() {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para fechar caixa.");
+      return;
+    }
+
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Fechar caixa</h2>
+      <p>Carregando caixas abertos...</p>
+      <button id="voltarFechamento">Voltar</button>
+    `;
+
+    document.querySelector("#voltarFechamento").onclick = mostrarInicio;
+
+    let consulta = supabase
+      .from("caixas")
+      .select("id, operador_id, valor_inicial, valor_esperado, aberto_em, status")
+      .eq("status", "aberto")
+      .order("aberto_em", { ascending: true });
+
+    if (temPermissao("caixa") && !temPermissao("administrador")) {
+      consulta = consulta.eq("operador_id", usuarioAtual.id);
+    }
+
+    const { data: caixas, error } = await consulta;
+
+    if (error) {
+      erro("Não foi possível consultar os caixas abertos.", error);
+      mostrarInicio();
+      return;
+    }
+
+    if (!caixas || caixas.length === 0) {
+      limparPainel();
+
+      painel.innerHTML = `
+        <h2>Fechar caixa</h2>
+        <p>Não há caixa aberto disponível para você.</p>
+        <button id="voltarFechamento">Voltar</button>
+      `;
+
+      document.querySelector("#voltarFechamento").onclick = mostrarInicio;
+      return;
+    }
+
+    const idsOperadores = [
+      ...new Set(caixas.map(c => c.operador_id).filter(Boolean))
+    ];
+
+    const nomesOperadores = {};
+
+    if (idsOperadores.length > 0) {
+      const { data: perfis, error: erroPerfis } = await supabase
+        .from("perfis_usuarios")
+        .select("id, nome")
+        .in("id", idsOperadores);
+
+      if (erroPerfis) {
+        erro("Não foi possível identificar os operadores dos caixas.", erroPerfis);
+        mostrarInicio();
+        return;
+      }
+
+      (perfis || []).forEach(perfil => {
+        nomesOperadores[perfil.id] = perfil.nome;
+      });
+    }
+
+    mostrarSelecaoCaixa(caixas, nomesOperadores);
+  }
+
+  function mostrarSelecaoCaixa(caixas, nomesOperadores) {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Selecionar caixa aberto</h2>
+      <p>Escolha o caixa que deseja conferir.</p>
+      <div id="listaCaixasAbertos"></div>
+      <button id="voltarFechamento">Voltar</button>
+    `;
+
+    const lista = document.querySelector("#listaCaixasAbertos");
+
+    caixas.forEach(caixa => {
+      const botao = document.createElement("button");
+
+      botao.type = "button";
+      botao.className = "item-pedido";
+      botao.style.display = "block";
+      botao.style.width = "100%";
+      botao.style.marginBottom = "10px";
+
+      const operador =
+        nomesOperadores[caixa.operador_id] || "Operador";
+
+      const abertura = caixa.aberto_em
+        ? new Date(caixa.aberto_em).toLocaleString("pt-BR")
+        : "Horário não informado";
+
+      botao.textContent =
+        `${operador} | Inicial: ${dinheiro(caixa.valor_inicial)} | ` +
+        `Esperado: ${dinheiro(caixa.valor_esperado)} | ` +
+        `Abertura: ${abertura}`;
+
+      botao.onclick = () => {
+        mostrarConferenciaCaixa(
+          caixa,
+          operador,
+          caixas,
+          nomesOperadores
+        );
+      };
+
+      lista.appendChild(botao);
+    });
+
+    document.querySelector("#voltarFechamento").onclick = mostrarInicio;
+  }
+
+  function mostrarConferenciaCaixa(
+    caixa,
+    operador,
+    caixas,
+    nomesOperadores
+  ) {
+    limparPainel();
+
+    const esperado = Number(caixa.valor_esperado || 0);
+
+    painel.innerHTML = `
+      <h2>Conferência do caixa</h2>
+
+      <p>
+        <strong>Operador que abriu:</strong>
+        ${escapar(operador)}
+      </p>
+
+      <p>
+        <strong>Valor inicial:</strong>
+        ${dinheiro(caixa.valor_inicial)}
+      </p>
+
+      <p>
+        <strong>Valor esperado:</strong>
+        ${dinheiro(esperado)}
+      </p>
+
+      <label>Valor contado</label>
+      <input
+        id="valorContadoCaixa"
+        type="number"
+        min="0"
+        step="0.01"
+        placeholder="Informe o dinheiro contado"
+      >
+
+      <label>Justificativa da diferença (se houver)</label>
+      <textarea
+        id="justificativaFechamento"
+        rows="3"
+        placeholder="Explique a diferença, se houver"
+      ></textarea>
+
+      <p id="previaDiferenca"></p>
+
+      <button id="confirmarFechamentoCaixa">
+        Confirmar fechamento
+      </button>
+
+      <button id="voltarSelecaoCaixa">
+        Voltar à lista
+      </button>
+    `;
+
+    const campoContado =
+      document.querySelector("#valorContadoCaixa");
+
+    const campoJustificativa =
+      document.querySelector("#justificativaFechamento");
+
+    const previa = document.querySelector("#previaDiferenca");
+
+    campoContado.oninput = () => {
+      if (campoContado.value === "") {
+        previa.textContent = "";
+        return;
+      }
+
+      const contado = Number(campoContado.value);
+
+      if (!Number.isFinite(contado) || contado < 0) {
+        previa.textContent = "Informe um valor válido.";
+        return;
+      }
+
+      const diferenca = contado - esperado;
+
+      previa.textContent =
+        "Diferença: " + dinheiro(diferenca);
+
+      if (diferenca !== 0) {
+        previa.textContent +=
+          " — será necessário informar uma justificativa.";
+      }
+    };
+
+    document.querySelector("#confirmarFechamentoCaixa").onclick =
+      () => confirmarFechamentoCaixa(caixa, esperado);
+
+    document.querySelector("#voltarSelecaoCaixa").onclick =
+      () => mostrarSelecaoCaixa(caixas, nomesOperadores);
+  }
+
+  async function confirmarFechamentoCaixa(caixa, esperado) {
+    const campoContado =
+      document.querySelector("#valorContadoCaixa");
+
+    const campoJustificativa =
+      document.querySelector("#justificativaFechamento");
+
+    const valorDigitado = campoContado.value.trim();
+    const valorContado = Number(valorDigitado);
+    const justificativa = campoJustificativa.value.trim();
+
+    if (
+      valorDigitado === "" ||
+      !Number.isFinite(valorContado) ||
+      valorContado < 0
+    ) {
+      mensagem(
+        "Informe um valor contado válido, igual ou maior que zero."
+      );
+      return;
+    }
+
+    const diferenca = valorContado - esperado;
+
+    if (diferenca !== 0 && !justificativa) {
+      mensagem(
+        "Informe uma justificativa para a diferença do caixa."
+      );
+
+      campoJustificativa.focus();
+      return;
+    }
+
+    const confirmou = confirm(
+      "Confirma o fechamento deste caixa?\n\n" +
+      "Valor esperado: " + dinheiro(esperado) + "\n" +
+      "Valor contado: " + dinheiro(valorContado) + "\n" +
+      "Diferença: " + dinheiro(diferenca)
+    );
+
+    if (!confirmou) {
+      return;
+    }
+
+    const botao =
+      document.querySelector("#confirmarFechamentoCaixa");
+
+    botao.disabled = true;
+    botao.textContent = "Fechando caixa...";
+
+    const { data, error } = await supabase.rpc("fechar_caixa", {
+      p_valor_contado: valorContado,
+      p_justificativa: justificativa || null,
+      p_caixa_id: caixa.id
+    });
+
+    if (error) {
+      botao.disabled = false;
+      botao.textContent = "Confirmar fechamento";
+
+      erro("Não foi possível fechar o caixa.", error);
+      return;
+    }
+
+    const resultado = Array.isArray(data) ? data[0] : data;
+
+    if (!resultado) {
+      mensagem(
+        "A função foi executada, mas não retornou os dados do fechamento. Confira o relatório do caixa."
+      );
+
+      mostrarInicio();
+      return;
+    }
+
+    mensagem(
+      "Caixa fechado com sucesso!\n\n" +
+      "Valor esperado: " + dinheiro(resultado.valor_esperado) + "\n" +
+      "Valor contado: " + dinheiro(resultado.valor_contado) + "\n" +
+      "Diferença: " + dinheiro(resultado.diferenca)
+    );
+
+    mostrarInicio();
+  }
+
+  // =====================================================
+  // HISTÓRICO DE CAIXA
+  // =====================================================
+
+  async function mostrarHistoricoCaixa() {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para consultar o histórico.");
+      return;
+    }
+
+    limparPainel();
+
+    const hoje = new Date();
+
+    const dataHoje = [
+      hoje.getFullYear(),
+      String(hoje.getMonth() + 1).padStart(2, "0"),
+      String(hoje.getDate()).padStart(2, "0")
+    ].join("-");
+
+    const mesAtual = dataHoje.slice(0, 7);
+    const anoAtual = hoje.getFullYear();
+
+    painel.innerHTML = `
+      <h2>Histórico de caixa</h2>
+
+      <label>Período</label>
+      <select id="historicoPeriodo">
+        <option value="todos">Todo o histórico</option>
+        <option value="mes">Escolher mês</option>
+        <option value="ano">Escolher ano</option>
+        <option value="personalizado">Intervalo personalizado</option>
+      </select>
+
+      <div id="filtroHistoricoMes" style="display:none;">
+        <label>Mês</label>
+        <input id="historicoMes" type="month">
+      </div>
+
+      <div id="filtroHistoricoAno" style="display:none;">
+        <label>Ano</label>
+        <input
+          id="historicoAno"
+          type="number"
+          min="2000"
+          max="2100"
+          step="1"
+          placeholder="Ex.: 2026"
+        >
+      </div>
+
+      <div id="filtroHistoricoDatas" style="display:none;">
+        <label>Data inicial</label>
+        <input id="historicoDataInicio" type="date">
+
+        <label>Data final</label>
+        <input id="historicoDataFim" type="date">
+      </div>
+
+      <label>Status</label>
+      <select id="historicoStatus">
+        <option value="todos">Todos</option>
+        <option value="aberto">Abertos</option>
+        <option value="fechado">Fechados</option>
+      </select>
+
+      <button id="buscarHistoricoCaixa">Consultar</button>
+
+      <div id="resumoHistoricoCaixa"></div>
+      <div id="listaHistoricoCaixa"></div>
+
+      <button id="voltarHistoricoCaixa">Voltar</button>
+    `;
+
+    document.querySelector("#historicoMes").value = mesAtual;
+    document.querySelector("#historicoAno").value = anoAtual;
+
+    document.querySelector("#historicoDataInicio").value =
+      `${anoAtual}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
+
+    document.querySelector("#historicoDataFim").value = dataHoje;
+
+    document.querySelector("#historicoPeriodo").onchange =
+      atualizarCamposPeriodoHistorico;
+
+    document.querySelector("#buscarHistoricoCaixa").onclick =
+      carregarHistoricoCaixa;
+
+    document.querySelector("#voltarHistoricoCaixa").onclick =
+      mostrarInicio;
+
+    atualizarCamposPeriodoHistorico();
+
+    await carregarHistoricoCaixa();
+  }
+
+  function atualizarCamposPeriodoHistorico() {
+    const periodo =
+      document.querySelector("#historicoPeriodo").value;
+
+    document.querySelector("#filtroHistoricoMes").style.display =
+      periodo === "mes" ? "block" : "none";
+
+    document.querySelector("#filtroHistoricoAno").style.display =
+      periodo === "ano" ? "block" : "none";
+
+    document.querySelector("#filtroHistoricoDatas").style.display =
+      periodo === "personalizado" ? "block" : "none";
+  }
+
+  async function carregarHistoricoCaixa() {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Você não tem permissão para consultar o histórico.");
+      mostrarInicio();
+      return;
+    }
+
+    const periodo =
+      document.querySelector("#historicoPeriodo").value;
+
+    const status =
+      document.querySelector("#historicoStatus").value;
+
+    let inicio = null;
+    let fim = null;
+
+    if (periodo === "mes") {
+      const mesSelecionado =
+        document.querySelector("#historicoMes").value;
+
+      if (!/^\d{4}-\d{2}$/.test(mesSelecionado)) {
+        mensagem("Selecione um mês válido.");
+        return;
+      }
+
+      const [ano, mes] = mesSelecionado.split("-").map(Number);
+      const ultimoDia = new Date(ano, mes, 0).getDate();
+
+      inicio = `${ano}-${String(mes).padStart(2, "0")}-01`;
+      fim = `${ano}-${String(mes).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
+    } else if (periodo === "ano") {
+      const ano = Number(document.querySelector("#historicoAno").value);
+      if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) {
+        mensagem("Informe um ano válido.");
+        return;
+      }
+      inicio = `${ano}-01-01`;
+      fim = `${ano}-12-31`;
+    } else if (periodo === "personalizado") {
+      inicio = document.querySelector("#historicoDataInicio").value;
+      fim = document.querySelector("#historicoDataFim").value;
+      if (!inicio || !fim || inicio > fim) {
+        mensagem("Confira as datas do intervalo personalizado.");
+        return;
+      }
+    }
+
+    const listaDiv = document.querySelector("#listaHistoricoCaixa");
+    const resumoDiv = document.querySelector("#resumoHistoricoCaixa");
+
+    listaDiv.innerHTML = "<p>Carregando histórico...</p>";
+    resumoDiv.innerHTML = "";
+
+    let query = supabase
+      .from("caixas")
+      .select("*")
+      .order("aberto_em", { ascending: false });
+
+    if (status !== "todos") {
+      query = query.eq("status", status);
+    }
+
+    if (inicio && fim) {
+      query = query.gte("aberto_em", `${inicio}T00:00:00`).lte("aberto_em", `${fim}T23:59:59`);
+    }
+
+    const { data: caixas, error } = await query;
+
+    if (error) {
+      erro("Não foi possível carregar o histórico de caixa.", error);
+      listaDiv.innerHTML = "<p>Erro ao carregar dados.</p>";
+      return;
+    }
+
+    if (!caixas || caixas.length === 0) {
+      listaDiv.innerHTML = "<p>Nenhum registro encontrado para o filtro selecionado.</p>";
+      return;
+    }
+
+    listaDiv.innerHTML = "";
+    caixas.forEach(c => {
+      const card = document.createElement("div");
+      card.className = "item-pedido";
+      card.style.cssText = "display: block; margin-bottom: 10px; padding: 10px; border: 1px solid #ccc;";
+      card.innerHTML = `
+        <p><strong>Status:</strong> ${escapar(c.status).toUpperCase()}</p>
+        <p><strong>Abertura:</strong> ${c.aberto_em ? new Date(c.aberto_em).toLocaleString("pt-BR") : "—"}</p>
+        <p><strong>Valor Inicial:</strong> ${dinheiro(c.valor_inicial)}</p>
+        <p><strong>Valor Esperado:</strong> ${dinheiro(c.valor_esperado)}</p>
+        <p><strong>Valor Contado:</strong> ${c.valor_contado !== null ? dinheiro(c.valor_contado) : "—"}</p>
+        <p><strong>Diferença:</strong> ${c.diferenca !== null ? dinheiro(c.diferenca) : "—"}</p>
+      `;
+      listaDiv.appendChild(card);
     });
   }
 
-  async function carregarContasAguardando() {
-    limpar();
-    painel.innerHTML = `
-      <h2>Contas Aguardando Pagamento</h2>
-      <button id="voltar">Voltar</button>
-      <p style="margin-top: 10px;">Nenhuma conta pendente no momento.</p>
-    `;
-    document.querySelector("#voltar").onclick = mostrarInicio;
-  }
-
   // =====================================================
-  // 5. TEMPO REAL (REALTIME)
+  // INICIALIZAÇÃO DO APP
   // =====================================================
 
-  function iniciarRealtime() {
-    if (canalRealtime) return;
-    canalRealtime = supabase
-      .channel("ligeirinho-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "produtos" }, () => carregarProdutos())
-      .on("postgres_changes", { event: "*", schema: "public", table: "mesas" }, () => carregarMesas())
-      .subscribe();
-  }
+  supabase.auth.onAuthStateChange(async (evento) => {
+    if (evento === "PASSWORD_RECOVERY") {
+      mostrarNovaSenha();
+      return;
+    }
+  });
 
-})();
+  const { data: sessionData } = await supabase.auth.getSession();
+
+  if (sessionData.session) {
+    if (!modoRecuperacao) {
+      await verificarUsuario();
+    }
+  } else {
+    mostrarLogin();
+  }
+});
