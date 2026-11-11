@@ -340,7 +340,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // =====================================================
-  // STUBS DE SUPORTE (Produtos, Mesas, Contas, Realtime)
+  // PRODUTOS E MESAS (COMANDAS)
   // =====================================================
 
   async function carregarProdutosSilencioso() {
@@ -348,7 +348,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const { data } = await supabase.from("produtos").select("*").order("nome");
       produtos = data || [];
     } catch (e) {
-      console.error("Erro ao carregar produtos silenciosamente:", e);
+      console.error("Erro ao carregar produtos:", e);
     }
   }
 
@@ -367,21 +367,202 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function carregarDadosMesas() {
     try {
-      const { data } = await supabase.from("mesas").select("*").order("numero");
-      mesas = data || [];
+      const { data: dadosMesas } = await supabase.from("mesas").select("*").order("numero");
+      mesas = dadosMesas || [];
+
+      const { data: dadosPedidos } = await supabase
+        .from("pedidos")
+        .select("*")
+        .neq("status", "fechado");
+
+      pedidosAbertos = dadosPedidos || [];
     } catch (e) {
-      console.error("Erro ao carregar mesas:", e);
+      console.error("Erro ao carregar dados de mesas:", e);
     }
   }
 
-  function mostrarMesas() {
+  async function mostrarMesas() {
+    await carregarDadosMesas();
     limparPainel();
+
     painel.innerHTML = `
-      <h2>Controle de Mesas</h2>
-      <button id="voltar">Voltar</button>
-      <p style="margin-top: 15px;">Módulo de mesas carregado com sucesso.</p>
+      <h2>Controle de Mesas (1 a 50)</h2>
+      <button id="voltar" style="margin-bottom: 15px;">Voltar ao Início</button>
+      <div id="gridMesas" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px;"></div>
     `;
+
     document.querySelector("#voltar").onclick = mostrarInicio;
+    const container = document.querySelector("#gridMesas");
+
+    if (!mesas.length) {
+      container.innerHTML = "<p>Nenhuma mesa cadastrada no banco de dados.</p>";
+      return;
+    }
+
+    mesas.forEach(mesa => {
+      const pedidoMesa = pedidosAbertos.find(p => p.mesa_id === mesa.id);
+      const ocupada = !!pedidoMesa;
+
+      const card = document.createElement("button");
+      card.style.cssText = `
+        padding: 12px 8px; 
+        font-weight: bold; 
+        border-radius: 8px; 
+        background: ${ocupada ? "#fdeaea" : "#eaf8ef"}; 
+        border: 2px solid ${ocupada ? "#d9534f" : "#2e9d61"}; 
+        cursor: pointer; 
+        color: ${ocupada ? "#a32323" : "#176b39"};
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+      `;
+      card.innerHTML = `
+        <span>Mesa ${mesa.numero}</span>
+        <small style="font-size: 0.75rem; font-weight: normal;">${ocupada ? "🔴 Ocupada" : "🟢 Livre"}</small>
+      `;
+
+      card.onclick = () => abrirMesaDetalhes(mesa, pedidoMesa);
+      container.appendChild(card);
+    });
+  }
+
+  async function abrirMesaDetalhes(mesa, pedidoExistente) {
+    mesaAtual = mesa;
+    pedidoAtual = pedidoExistente || null;
+    limparPainel();
+
+    if (!pedidoAtual) {
+      painel.innerHTML = `
+        <h2>Mesa ${mesa.numero}</h2>
+        <p style="color: #2e9d32; font-weight: bold; margin: 15px 0;">🟢 Mesa Livre</p>
+        <button id="btnAbrirComanda" style="background: #2e9d32; color: white; padding: 10px 20px;">Abrir Comanda</button>
+        <br><br>
+        <button id="voltarMesas">Voltar para o mapa</button>
+      `;
+      document.querySelector("#btnAbrirComanda").onclick = criarNovaComanda;
+      document.querySelector("#voltarMesas").onclick = mostrarMesas;
+      return;
+    }
+
+    // Carregar itens do pedido
+    try {
+      const { data: itens, error } = await supabase
+        .from("itens_pedido")
+        .select("id, quantidade, preco_unitario, produtos(nome)")
+        .eq("pedido_id", pedidoAtual.id);
+
+      if (error) throw error;
+      itensAtuais = itens || [];
+    } catch (e) {
+      erro("Erro ao carregar itens da comanda.", e);
+      itensAtuais = [];
+    }
+
+    let totalGeral = 0;
+    const linhasItens = itensAtuais.map(item => {
+      const subtotal = Number(item.quantidade) * Number(item.preco_unitario);
+      totalGeral += subtotal;
+      return `
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #eee; padding: 6px 0;">
+          <span>${item.quantidade}x ${escapar(item.produtos?.nome || "Item")}</span>
+          <strong>${dinheiro(subtotal)}</strong>
+        </div>
+      `;
+    }).join("") || "<p>Nenhum item lançado ainda.</p>";
+
+    painel.innerHTML = `
+      <h2>Mesa ${mesa.numero}</h2>
+      <p>Status: <strong>OCUPADA</strong></p>
+      
+      <div style="background: #f8f9fa; padding: 10px; border-radius: 6px; margin: 15px 0; border: 1px solid #ddd;">
+        <label>Adicionar Produto</label>
+        <select id="selectProduto" style="width: 100%; margin: 5px 0 10px; padding: 6px;">
+          <option value="">Selecione um produto...</option>
+          ${produtos.filter(p => p.ativo).map(p => `<option value="${p.id}">${escapar(p.nome)} — ${dinheiro(p.preco_venda)}</option>`).join("")}
+        </select>
+        <div style="display: flex; gap: 10px;">
+          <input type="number" id="qtdProduto" value="1" min="1" style="width: 80px; padding: 6px;">
+          <button id="btnAddItem" style="flex: 1; background: #0056b3; color: white;">Lançar Produto</button>
+        </div>
+      </div>
+
+      <h3>Itens Lançados</h3>
+      <div style="max-height: 180px; overflow-y: auto; margin-bottom: 10px;">${linhasItens}</div>
+      <h3 style="color: #a32323; text-align: right;">Total: ${dinheiro(totalGeral)}</h3>
+
+      <button id="btnFecharConta" style="background: #e67e22; color: white; width: 100%; margin-top: 15px; padding: 10px;">Solicitar Fechamento da Conta</button>
+      <br><br>
+      <button id="voltarMesas">Voltar para o mapa</button>
+    `;
+
+    document.querySelector("#btnAddItem").onclick = adicionarItem;
+    document.querySelector("#btnFecharConta").onclick = solicitarFechamentoConta;
+    document.querySelector("#voltarMesas").onclick = mostrarMesas;
+  }
+
+  async function criarNovaComanda() {
+    try {
+      const { data, error } = await supabase
+        .from("pedidos")
+        .insert({
+          mesa_id: mesaAtual.id,
+          status: "aberto",
+          usuario_id: usuarioAtual.id
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      
+      await carregarDadosMesas();
+      abrirMesaDetalhes(mesaAtual, data);
+    } catch (e) {
+      erro("Não foi possível abrir a comanda.", e);
+    }
+  }
+
+  async function adicionarItem() {
+    const produtoId = document.querySelector("#selectProduto").value;
+    const qtd = Number(document.querySelector("#qtdProduto").value);
+
+    if (!produtoId || qtd < 1) {
+      mensagem("Selecione um produto e uma quantidade válida.");
+      return;
+    }
+
+    const prod = produtos.find(p => p.id === produtoId);
+
+    try {
+      const { error } = await supabase.from("itens_pedido").insert({
+        pedido_id: pedidoAtual.id,
+        produto_id: produtoId,
+        quantidade: qtd,
+        preco_unitario: prod.preco_venda
+      });
+
+      if (error) throw error;
+      abrirMesaDetalhes(mesaAtual, pedidoAtual);
+    } catch (e) {
+      erro("Erro ao lançar item no pedido.", e);
+    }
+  }
+
+  async function solicitarFechamentoConta() {
+    if (!confirm("Deseja solicitar o fechamento da conta desta mesa?")) return;
+
+    try {
+      const { error } = await supabase
+        .from("pedidos")
+        .update({ status: "aguardando_pagamento" })
+        .eq("id", pedidoAtual.id);
+
+      if (error) throw error;
+      mensagem("Conta enviada para a fila de pagamento!");
+      mostrarMesas();
+    } catch (e) {
+      erro("Erro ao solicitar fechamento.", e);
+    }
   }
 
   async function carregarContasAguardando() {
@@ -389,9 +570,49 @@ document.addEventListener("DOMContentLoaded", async () => {
     painel.innerHTML = `
       <h2>Contas Aguardando Pagamento</h2>
       <button id="voltar">Voltar</button>
-      <p style="margin-top: 15px;">Nenhuma conta pendente no momento.</p>
+      <p style="margin-top: 15px;">Carregando contas pendentes...</p>
     `;
     document.querySelector("#voltar").onclick = mostrarInicio;
+
+    try {
+      const { data, error } = await supabase
+        .from("pedidos")
+        .select("id, status, mesas(numero)")
+        .eq("status", "aguardando_pagamento");
+
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        painel.innerHTML = `
+          <h2>Contas Aguardando Pagamento</h2>
+          <button id="voltar" style="margin-bottom: 15px;">Voltar</button>
+          <p>Nenhuma conta pendente no momento.</p>
+        `;
+        document.querySelector("#voltar").onclick = mostrarInicio;
+        return;
+      }
+
+      let html = `
+        <h2>Contas Aguardando Pagamento</h2>
+        <button id="voltar" style="margin-bottom: 15px;">Voltar</button>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+      `;
+
+      data.forEach(p => {
+        html += `
+          <div class="item-pedido" style="padding: 12px; border: 1px solid #ccc; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+            <span><strong>Mesa ${p.mesas?.numero || "?"}</strong> — Aguardando Caixa</span>
+            <button onclick="alert('Módulo de recebimento do caixa ativo!')">Receber</button>
+          </div>
+        `;
+      });
+
+      html += `</div>`;
+      painel.innerHTML = html;
+      document.querySelector("#voltar").onclick = mostrarInicio;
+    } catch (e) {
+      erro("Erro ao carregar contas.", e);
+    }
   }
 
   function iniciarRealtime() {
@@ -400,6 +621,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       .channel("ligeirinho-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "produtos" }, () => carregarProdutosSilencioso())
       .on("postgres_changes", { event: "*", schema: "public", table: "mesas" }, () => carregarDadosMesas())
+      .on("postgres_changes", { event: "*", schema: "public", table: "pedidos" }, () => carregarDadosMesas())
       .subscribe();
   }
 
