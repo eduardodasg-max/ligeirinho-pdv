@@ -1,26 +1,46 @@
+
 /* =====================================================
    LIGEIRINHO PDV
-   Cadastro de produtos + alertas automáticos de estoque
+   Supabase + Produtos + Mesas + Pedidos + Realtime
    ===================================================== */
 
-(() => {
-  "use strict";
-
-  document.addEventListener("DOMContentLoaded", iniciar);
+document.addEventListener("DOMContentLoaded", async () => {
+  const painel = document.querySelector(".painel");
 
   const SUPABASE_URL = "https://ewfxcsaxxsqixtmxruxz.supabase.co";
   const SUPABASE_KEY = "sb_publishable_1Cch1EDl59lNQFUiUIkmBQ_BXHuYjly";
-  const URL_RECUPERACAO = "https://eduardodasg-max.github.io/ligeirinho-pdv/";
 
-  let supabase;
-  let painel;
+  if (!window.supabase || !painel) {
+    alert("Não foi possível iniciar o Ligeirinho.");
+    return;
+  }
+
+  const supabase = window.supabase.createClient(
+    SUPABASE_URL,
+    SUPABASE_KEY
+  );
+
   let usuarioAtual = null;
   let perfilAtual = null;
   let produtos = [];
   let mesas = [];
+  let pedidosAbertos = [];
+  let mesaAtual = null;
   let pedidoAtual = null;
+  let itensAtuais = [];
   let canalRealtime = null;
-  let aguardandoRedefinicao = false;
+  let atualizacaoEmAndamento = false;
+
+  const categoriasProdutos = [
+    { valor: "comida", nome: "Comida" },
+    { valor: "bebida", nome: "Bebida" },
+    { valor: "petiscos", nome: "Petiscos" },
+    { valor: "drinks", nome: "Drinks" },
+    { valor: "bebidas sem álcool", nome: "Bebidas sem álcool" }
+  ];
+
+  let filtroProdutos = "ativos";
+  let pesquisaProdutos = "";
 
   const dinheiro = valor =>
     Number(valor || 0).toLocaleString("pt-BR", {
@@ -28,19 +48,21 @@
       currency: "BRL"
     });
 
-  const mensagem = texto => window.alert(texto);
-
-  function mostrarErro(contexto, erro) {
-    console.error(contexto, erro);
-    mensagem(contexto + (erro?.message ? "\n" + erro.message : ""));
+  function mensagem(texto) {
+    alert(texto);
   }
 
-  function limpar() {
+  function erro(texto, detalhe) {
+    console.error(texto, detalhe);
+    mensagem(texto + (detalhe?.message ? "\n" + detalhe.message : ""));
+  }
+
+  function limparPainel() {
     painel.innerHTML = "";
   }
 
-  function escapar(valor) {
-    return String(valor ?? "").replace(/[&<>"']/g, caractere => ({
+  function escapar(texto) {
+    return String(texto ?? "").replace(/[&<>"']/g, caractere => ({
       "&": "&amp;",
       "<": "&lt;",
       ">": "&gt;",
@@ -49,461 +71,152 @@
     })[caractere]);
   }
 
-  function temPermissao(...funcoes) {
-    return funcoes.includes(perfilAtual?.funcao);
+  function voltarInicio() {
+    mostrarInicio();
   }
 
-  // CLASSIFICAÇÃO DO ESTOQUE
-
-  function calcularAlertasEstoque() {
-    const ativos = produtos.filter(produto => produto.ativo);
-
-    const zerados = ativos.filter(produto =>
-      Number(produto.estoque || 0) <= 0
-    );
-
-    const baixos = ativos.filter(produto =>
-      Number(produto.estoque || 0) > 0 &&
-      Number(produto.estoque || 0) <=
-        Number(produto.estoque_minimo || 0)
-    );
-
-    return {
-      ativos,
-      zerados,
-      baixos,
-      total: zerados.length + baixos.length
-    };
-  }
-
-  function atualizarAvisosInicio() {
-    const area = document.querySelector("#alertasEstoqueInicio");
-
-    if (!area) return;
-
-    const alertas = calcularAlertasEstoque();
-
-    if (alertas.total === 0) {
-      area.innerHTML = `
-        <div style="
-          padding: 12px;
-          margin: 12px 0;
-          border: 1px solid #2e9d61;
-          border-radius: 8px;
-          background: #eaf8ef;
-          color: #176b39;
-        ">
-          <strong>Estoque em dia!</strong>
-          <p style="margin: 5px 0 0">
-            Nenhum produto ativo com estoque baixo ou zerado.
-          </p>
-        </div>
-      `;
-      return;
-    }
-
-    let conteudo = `
-      <div style="
-        padding: 12px;
-        margin: 12px 0;
-        border: 1px solid #d99b28;
-        border-radius: 8px;
-        background: #fff8e8;
-        color: #49370d;
-      ">
-        <strong>⚠️ Atenção ao estoque</strong>
-        <p style="margin: 8px 0">
-          ${alertas.zerados.length} produto(s) zerado(s) |
-          ${alertas.baixos.length} produto(s) com estoque baixo.
-        </p>
-    `;
-
-    if (alertas.zerados.length) {
-      conteudo += `
-        <div style="
-          padding: 8px;
-          margin-top: 8px;
-          border-radius: 6px;
-          background: #fdeaea;
-          color: #a32323;
-        ">
-          <strong>🔴 Estoque zerado</strong>
-          <ul style="margin: 6px 0 0; padding-left: 20px">
-            ${alertas.zerados.map(produto => `
-              <li>
-                ${escapar(produto.nome)}
-                — saldo: ${escapar(produto.estoque)}
-              </li>
-            `).join("")}
-          </ul>
-        </div>
-      `;
-    }
-
-    if (alertas.baixos.length) {
-      conteudo += `
-        <div style="
-          padding: 8px;
-          margin-top: 8px;
-          border-radius: 6px;
-          background: #fff0c9;
-          color: #765000;
-        ">
-          <strong>🟡 Estoque baixo</strong>
-          <ul style="margin: 6px 0 0; padding-left: 20px">
-            ${alertas.baixos.map(produto => `
-              <li>
-                ${escapar(produto.nome)}
-                — saldo: ${escapar(produto.estoque)}
-                — mínimo: ${escapar(produto.estoque_minimo)}
-              </li>
-            `).join("")}
-          </ul>
-        </div>
-      `;
-    }
-
-    if (temPermissao("administrador")) {
-      conteudo += `
-        <button id="abrirEstoqueAlertas">
-          Abrir controle de estoque
-        </button>
-      `;
-    }
-
-    conteudo += "</div>";
-
-    area.innerHTML = conteudo;
-
-    const botao = document.querySelector("#abrirEstoqueAlertas");
-
-    if (botao) {
-      botao.onclick = mostrarEstoque;
-    }
-  }
-
-  // INICIALIZAÇÃO
-
-  async function iniciar() {
-    painel = document.querySelector(".painel");
-
-    if (!painel) {
-      console.error("Elemento .painel não encontrado.");
-      return;
-    }
-
-    if (!window.supabase?.createClient) {
-      painel.innerHTML =
-        "<h2>Erro ao carregar</h2><p>A biblioteca do Supabase não foi carregada. Confira o index.html.</p>";
-      return;
-    }
-
-    try {
-      supabase = window.supabase.createClient(
-        SUPABASE_URL,
-        SUPABASE_KEY
-      );
-
-      supabase.auth.onAuthStateChange(async (evento, sessao) => {
-        if (evento === "PASSWORD_RECOVERY") {
-          aguardandoRedefinicao = true;
-          mostrarRedefinirSenha();
-        }
-      });
-
-      const { data, error } = await supabase.auth.getSession();
-
-      if (error) throw error;
-
-      if (data.session) {
-        if (!aguardandoRedefinicao) {
-          await verificarUsuario();
-        }
-      } else {
-        mostrarLogin();
-      }
-    } catch (erro) {
-      mostrarErro("Não foi possível iniciar o Ligeirinho.", erro);
-      mostrarLogin();
-    }
-  }
-
+  // =====================================================
   // LOGIN
+  // =====================================================
 
   function mostrarLogin() {
-    limpar();
+    limparPainel();
 
     painel.innerHTML = `
       <h2>Acesso ao Ligeirinho</h2>
 
-      <label for="email">E-mail</label>
-      <input id="email" type="email" autocomplete="username"
-        placeholder="Seu e-mail">
+      <label>E-mail</label>
+      <input id="email" type="email" placeholder="Seu e-mail">
 
-      <label for="senha">Senha</label>
-      <input id="senha" type="password"
-        autocomplete="current-password" placeholder="Sua senha">
+      <label>Senha</label>
+      <input id="senha" type="password" placeholder="Sua senha">
 
       <button id="entrar">Entrar</button>
-
-      <p>
-        <a href="#" id="esqueciSenha">Esqueci minha senha</a>
-      </p>
-
-      <p id="mensagemLogin"></p>
     `;
 
     document.querySelector("#entrar").onclick = entrar;
-    document.querySelector("#esqueciSenha").onclick = evento => {
-      evento.preventDefault();
-      solicitarRecuperacaoSenha();
-    };
-
-    document.querySelector("#senha").addEventListener("keydown", evento => {
-      if (evento.key === "Enter") entrar();
-    });
   }
 
   async function entrar() {
     const email = document.querySelector("#email").value.trim();
     const senha = document.querySelector("#senha").value;
-    const botao = document.querySelector("#entrar");
-    const aviso = document.querySelector("#mensagemLogin");
 
     if (!email || !senha) {
-      aviso.textContent = "Informe seu e-mail e sua senha.";
+      mensagem("Informe seu e-mail e sua senha.");
       return;
     }
 
+    const botao = document.querySelector("#entrar");
     botao.disabled = true;
     botao.textContent = "Entrando...";
-    aviso.textContent = "";
 
-    try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password: senha
-      });
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password: senha
+    });
 
-      if (error) throw error;
-
-      await verificarUsuario();
-    } catch (erro) {
+    if (error) {
       botao.disabled = false;
       botao.textContent = "Entrar";
-      aviso.textContent = erro.message || "Falha no acesso.";
+      erro("Não foi possível entrar.", error);
+      return;
     }
+
+    await verificarUsuario();
   }
 
-  // RECUPERAÇÃO DE SENHA
+  // =====================================================
+  // PERFIL E PERMISSÕES
+  // =====================================================
 
-  async function solicitarRecuperacaoSenha() {
-    const campoEmail = document.querySelector("#email");
-    const aviso = document.querySelector("#mensagemLogin");
-
-    let email = campoEmail?.value.trim() || "";
-
-    if (!email) {
-      email = prompt("Informe o e-mail cadastrado no Ligeirinho:");
-
-      if (!email) {
-        aviso.textContent = "Informe um e-mail para recuperar a senha.";
-        return;
-      }
-
-      email = email.trim();
-
-      if (campoEmail) {
-        campoEmail.value = email;
-      }
-    }
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      aviso.textContent = "Informe um endereço de e-mail válido.";
-      return;
-    }
-
-    const botao = document.querySelector("#esqueciSenha");
-
-    if (botao) {
-      botao.style.pointerEvents = "none";
-      botao.textContent = "Enviando...";
-    }
-
-    aviso.textContent = "";
-
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: URL_RECUPERACAO
-      });
-
-      if (error) throw error;
-
-      aviso.textContent =
-        "Se o e-mail estiver cadastrado, você receberá um link para redefinir sua senha. Confira também a caixa de spam.";
-    } catch (erro) {
-      console.error("Erro ao solicitar recuperação:", erro);
-      aviso.textContent =
-        "Não foi possível solicitar a recuperação: " +
-        (erro.message || "tente novamente mais tarde.");
-    } finally {
-      if (botao) {
-        botao.style.pointerEvents = "";
-        botao.textContent = "Esqueci minha senha";
-      }
-    }
-  }
-
-  function mostrarRedefinirSenha() {
-    limpar();
-
-    painel.innerHTML = `
-      <h2>Redefinir senha</h2>
-      <p>Digite sua nova senha abaixo.</p>
-
-      <label for="novaSenha">Nova senha</label>
-      <input id="novaSenha" type="password"
-        autocomplete="new-password" placeholder="Nova senha">
-
-      <label for="confirmarSenha">Confirme a nova senha</label>
-      <input id="confirmarSenha" type="password"
-        autocomplete="new-password" placeholder="Repita a nova senha">
-
-      <button id="salvarNovaSenha">Salvar nova senha</button>
-      <p id="mensagemRedefinicao"></p>
-    `;
-
-    document.querySelector("#salvarNovaSenha").onclick =
-      salvarNovaSenha;
-  }
-
-  async function salvarNovaSenha() {
-    const senha = document.querySelector("#novaSenha").value;
-    const confirmacao = document.querySelector("#confirmarSenha").value;
-    const botao = document.querySelector("#salvarNovaSenha");
-    const aviso = document.querySelector("#mensagemRedefinicao");
-
-    if (!senha || !confirmacao) {
-      aviso.textContent = "Preencha os dois campos.";
-      return;
-    }
-
-    if (senha.length < 6) {
-      aviso.textContent = "A senha deve ter pelo menos 6 caracteres.";
-      return;
-    }
-
-    if (senha !== confirmacao) {
-      aviso.textContent = "As senhas não são iguais.";
-      return;
-    }
-
-    botao.disabled = true;
-    botao.textContent = "Salvando...";
-
-    try {
-      const { error } = await supabase.auth.updateUser({
-        password: senha
-      });
-
-      if (error) throw error;
-
-      aguardandoRedefinicao = false;
-
-      await supabase.auth.signOut();
-
-      mensagem("Senha alterada com sucesso. Entre com sua nova senha.");
-
-      mostrarLogin();
-    } catch (erro) {
-      console.error("Erro ao redefinir senha:", erro);
-      aviso.textContent =
-        "Não foi possível alterar a senha: " +
-        (erro.message || "tente novamente.");
-      botao.disabled = false;
-      botao.textContent = "Salvar nova senha";
-    }
+  function temPermissao(...funcoes) {
+    return funcoes.includes(perfilAtual?.funcao);
   }
 
   async function verificarUsuario() {
-    try {
-      const { data, error } = await supabase.auth.getUser();
+    const { data, error } = await supabase.auth.getUser();
 
-      if (error || !data.user) {
-        mostrarLogin();
-        return;
-      }
-
-      usuarioAtual = data.user;
-
-      const { data: perfil, error: erroPerfil } = await supabase
-        .from("perfis_usuarios")
-        .select("id, nome, funcao, ativo")
-        .eq("id", usuarioAtual.id)
-        .single();
-
-      if (erroPerfil) throw erroPerfil;
-
-      if (!perfil || !perfil.ativo) {
-        throw new Error("Perfil não encontrado ou usuário inativo.");
-      }
-
-      if (!["administrador", "caixa", "garcom"].includes(perfil.funcao)) {
-        throw new Error("Função de usuário não reconhecida.");
-      }
-
-      perfilAtual = perfil;
-
-      await carregarProdutos();
-      await carregarMesas();
-      iniciarRealtime();
-      mostrarInicio();
-
-    } catch (erro) {
-      mostrarErro("Não foi possível validar seu perfil.", erro);
-      await supabase.auth.signOut();
-      usuarioAtual = null;
-      perfilAtual = null;
+    if (error || !data.user) {
       mostrarLogin();
+      return;
     }
+
+    usuarioAtual = data.user;
+
+    const { data: perfil, error: erroPerfil } = await supabase
+      .from("perfis_usuarios")
+      .select("nome, funcao, ativo")
+      .eq("id", usuarioAtual.id)
+      .single();
+
+    if (erroPerfil || !perfil || !perfil.ativo) {
+      mensagem("Perfil não encontrado ou usuário inativo.");
+      await supabase.auth.signOut();
+      mostrarLogin();
+      return;
+    }
+
+    if (!["administrador", "caixa", "garcom"].includes(perfil.funcao)) {
+      mensagem("Função de usuário não reconhecida.");
+      await supabase.auth.signOut();
+      mostrarLogin();
+      return;
+    }
+
+    perfilAtual = perfil;
+
+    await carregarProdutosSilencioso();
+    await carregarDadosMesas();
+    iniciarRealtime();
+    mostrarInicio();
   }
 
-  // PAINEL PRINCIPAL
+  // =====================================================
+  // TELA PRINCIPAL
+  // =====================================================
 
   function mostrarInicio() {
-    limpar();
+    limparPainel();
+
+    const nome = escapar(perfilAtual?.nome || "Equipe");
+    const funcao = escapar(perfilAtual?.funcao || "");
 
     painel.innerHTML = `
-      <h2>🚤 Ligeirinho PDV</h2>
-      <p>Bem-vindo, ${escapar(perfilAtual.nome)}</p>
-      <p>Perfil: ${escapar(perfilAtual.funcao)}</p>
+      <h2>Bem-vindo, ${nome}!</h2>
+      <p>Perfil: ${funcao}</p>
 
-      <div id="alertasEstoqueInicio"></div>
+      <button id="botaoMesas">Controle de Mesas</button>
 
-      <button id="mesas">Controle de mesas</button>
       ${temPermissao("administrador")
-        ? '<button id="produtos">Produtos</button><button id="estoque">Estoque</button>' : ""}
+        ? '<button id="botaoProdutos">Produtos</button>'
+        : ""}
+
       ${temPermissao("administrador", "caixa")
-        ? '<button id="contas">Contas aguardando pagamento</button>' : ""}
-      <button id="atualizar">Atualizar</button>
+        ? '<button id="botaoContas">Contas aguardando pagamento</button>'
+        : ""}
+
+      <button id="atualizar">Atualizar dados</button>
       <button id="sair">Sair</button>
     `;
 
-    document.querySelector("#mesas").onclick = mostrarMesas;
-    document.querySelector("#atualizar").onclick = atualizarTudo;
-    document.querySelector("#sair").onclick = sair;
+    document.querySelector("#botaoMesas").onclick = mostrarMesas;
 
     if (temPermissao("administrador")) {
-      document.querySelector("#produtos").onclick = mostrarProdutos;
-      document.querySelector("#estoque").onclick = mostrarEstoque;
+      document.querySelector("#botaoProdutos").onclick = carregarProdutos;
     }
 
     if (temPermissao("administrador", "caixa")) {
-      document.querySelector("#contas").onclick =
+      document.querySelector("#botaoContas").onclick =
         carregarContasAguardando;
     }
 
-    atualizarAvisosInicio();
+    document.querySelector("#atualizar").onclick = async () => {
+      await carregarDadosMesas();
+      mensagem("Dados atualizados.");
+      mostrarMesas();
+    };
+
+    document.querySelector("#sair").onclick = sair;
   }
 
   async function sair() {
@@ -516,747 +229,1037 @@
 
     usuarioAtual = null;
     perfilAtual = null;
-    pedidoAtual = null;
     produtos = [];
     mesas = [];
-    aguardandoRedefinicao = false;
+    pedidosAbertos = [];
+    mesaAtual = null;
+    pedidoAtual = null;
+    itensAtuais = [];
 
     mostrarLogin();
   }
 
-  async function atualizarTudo() {
-    await carregarProdutos();
-    await carregarMesas();
-    atualizarAvisosInicio();
-    mostrarMesas();
-  }
-
+  // =====================================================
   // PRODUTOS
+  // =====================================================
 
-  async function carregarProdutos() {
+  async function carregarProdutosSilencioso() {
     const { data, error } = await supabase
       .from("produtos")
       .select("*")
       .order("nome");
 
-    if (error) throw error;
+    if (error) {
+      erro("Erro ao carregar produtos.", error);
+      return;
+    }
 
     produtos = data || [];
-    atualizarAvisosInicio();
   }
 
-  function mostrarProdutos() {
-    limpar();
+  async function carregarProdutos() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode acessar os produtos.");
+      return;
+    }
+
+    limparPainel();
 
     painel.innerHTML = `
       <h2>Produtos</h2>
+      <p>Carregando...</p>
+    `;
 
-      <button id="novo">Novo produto</button>
-      <button id="voltar">Voltar</button>
+    await carregarProdutosSilencioso();
+    mostrarListaProdutos();
+  }
 
-      <label for="pesquisaProduto">Pesquisar produto</label>
-      <input id="pesquisaProduto"
-        placeholder="Digite nome ou código">
+  function mostrarListaProdutos() {
+    if (!temPermissao("administrador")) {
+      mostrarInicio();
+      return;
+    }
 
-      <label for="filtroCategoria">Categoria</label>
-      <select id="filtroCategoria">
-        <option value="">Todas as categorias</option>
-      </select>
+    limparPainel();
 
-      <label for="filtroStatus">Situação</label>
-      <select id="filtroStatus">
+    painel.innerHTML = `
+      <h2>Cadastro de Produtos</h2>
+
+      <button id="novoProduto">Novo produto</button>
+
+      <label>Pesquisar produto</label>
+      <input
+        id="pesquisaProduto"
+        type="search"
+        placeholder="Digite o nome ou código"
+        value="${escapar(pesquisaProdutos)}"
+      >
+
+      <label>Mostrar</label>
+      <select id="filtroProdutos">
         <option value="ativos">Produtos ativos</option>
         <option value="inativos">Produtos inativos</option>
         <option value="todos">Todos os produtos</option>
       </select>
 
-      <div id="resumoProdutos"></div>
-      <div id="lista"></div>
+      <div id="listaProdutos"></div>
+
+      <button id="voltar">Voltar</button>
     `;
 
-    document.querySelector("#novo").onclick = () => formularioProduto();
+    const pesquisa = document.querySelector("#pesquisaProduto");
+    const filtro = document.querySelector("#filtroProdutos");
+
+    filtro.value = filtroProdutos;
+
+    document.querySelector("#novoProduto").onclick =
+      () => mostrarFormularioProduto();
+
     document.querySelector("#voltar").onclick = mostrarInicio;
 
-    const categorias = [
-      ...new Set(
-        produtos
-          .map(p => p.categoria)
-          .filter(Boolean)
-      )
-    ].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    pesquisa.oninput = () => {
+      pesquisaProdutos = pesquisa.value;
+      renderizarListaProdutos();
+    };
 
-    const filtroCategoria = document.querySelector("#filtroCategoria");
-
-    categorias.forEach(categoria => {
-      const opcao = document.createElement("option");
-      opcao.value = categoria;
-      opcao.textContent = categoria;
-      filtroCategoria.appendChild(opcao);
-    });
-
-    document.querySelector("#pesquisaProduto").oninput =
-      renderizarListaProdutos;
-
-    filtroCategoria.onchange = renderizarListaProdutos;
-
-    document.querySelector("#filtroStatus").onchange =
-      renderizarListaProdutos;
+    filtro.onchange = () => {
+      filtroProdutos = filtro.value;
+      renderizarListaProdutos();
+    };
 
     renderizarListaProdutos();
   }
 
   function renderizarListaProdutos() {
-    const lista = document.querySelector("#lista");
-    const resumo = document.querySelector("#resumoProdutos");
+    const lista = document.querySelector("#listaProdutos");
 
-    if (!lista || !resumo) return;
+    if (!lista) return;
 
     lista.innerHTML = "";
 
-    const pesquisa = document.querySelector("#pesquisaProduto")
-      .value.trim().toLocaleLowerCase("pt-BR");
+    let encontrados = produtos.filter(produto => {
+      if (filtroProdutos === "ativos" && !produto.ativo) return false;
+      if (filtroProdutos === "inativos" && produto.ativo) return false;
 
-    const categoria = document.querySelector("#filtroCategoria").value;
-    const status = document.querySelector("#filtroStatus").value;
+      const termo = pesquisaProdutos.trim().toLowerCase();
 
-    let filtrados = [...produtos];
+      if (!termo) return true;
 
-    if (status === "ativos") {
-      filtrados = filtrados.filter(p => p.ativo);
-    } else if (status === "inativos") {
-      filtrados = filtrados.filter(p => !p.ativo);
-    }
+      return (
+        String(produto.nome || "").toLowerCase().includes(termo) ||
+        String(produto.codigo || "").toLowerCase().includes(termo)
+      );
+    });
 
-    if (categoria) {
-      filtrados = filtrados.filter(p => p.categoria === categoria);
-    }
-
-    if (pesquisa) {
-      filtrados = filtrados.filter(p => {
-        const nome = String(p.nome || "").toLocaleLowerCase("pt-BR");
-        const codigo = String(p.codigo || "").toLocaleLowerCase("pt-BR");
-
-        return nome.includes(pesquisa) || codigo.includes(pesquisa);
-      });
-    }
-
-    const ativos = produtos.filter(p => p.ativo).length;
-    const inativos = produtos.filter(p => !p.ativo).length;
-
-    resumo.textContent =
-      `Total: ${produtos.length} | Ativos: ${ativos} | Inativos: ${inativos} | Encontrados: ${filtrados.length}`;
-
-    if (!filtrados.length) {
+    if (!encontrados.length) {
       lista.textContent = "Nenhum produto encontrado.";
       return;
     }
 
-    filtrados.forEach(produto => {
-      const linha = document.createElement("div");
-      linha.className = "item-pedido";
+    encontrados.forEach(produto => {
+      const item = document.createElement("div");
+      item.className = "item-pedido";
 
-      const texto = document.createElement("div");
+      const info = document.createElement("div");
+      info.className = "item-info";
 
-      texto.textContent =
-        `${produto.nome} — ${dinheiro(produto.preco_venda)} — Custo: ${dinheiro(produto.custo)} — Estoque: ${produto.estoque} — Mínimo: ${produto.estoque_minimo} — ${produto.categoria} — ${produto.ativo ? "ATIVO" : "INATIVO"}`;
+      const nome = document.createElement("strong");
+      nome.textContent = produto.nome;
+
+      const detalhes = document.createElement("span");
+
+      detalhes.textContent =
+        `${produto.codigo ? "Código: " + produto.codigo + " | " : ""}` +
+        `${produto.categoria} | ` +
+        `Venda: ${dinheiro(produto.preco_venda)} | ` +
+        `Estoque: ${produto.estoque}`;
+
+      const situacao = document.createElement("span");
+      situacao.textContent = produto.ativo ? "Ativo" : "Inativo";
+
+      info.append(nome, detalhes, situacao);
 
       const editar = document.createElement("button");
       editar.textContent = "Editar";
-      editar.onclick = () => formularioProduto(produto);
+      editar.onclick = () => mostrarFormularioProduto(produto);
 
       const alternar = document.createElement("button");
-      alternar.textContent = produto.ativo
-        ? "Desativar"
-        : "Reativar";
+      alternar.textContent = produto.ativo ? "Desativar" : "Reativar";
+      alternar.onclick = () => alternarProduto(produto);
 
-      alternar.onclick = () => alterarStatusProduto(produto);
-
-      linha.append(texto, editar, alternar);
-      lista.appendChild(linha);
+      item.append(info, editar, alternar);
+      lista.appendChild(item);
     });
   }
 
-  async function verificarCodigoDuplicado(codigo, produtoAtual = null) {
-    if (!codigo) return false;
-
-    const codigoNormalizado = codigo.trim().toLocaleLowerCase("pt-BR");
-
-    const duplicadoNaLista = produtos.some(p =>
-      String(p.codigo || "").trim().toLocaleLowerCase("pt-BR") ===
-        codigoNormalizado &&
-      p.id !== produtoAtual?.id
-    );
-
-    if (duplicadoNaLista) return true;
-
-    let consulta = supabase
-      .from("produtos")
-      .select("id")
-      .ilike("codigo", codigo.trim());
-
-    if (produtoAtual?.id) {
-      consulta = consulta.neq("id", produtoAtual.id);
-    }
-
-    const { data, error } = await consulta.limit(1);
-
-    if (error) throw error;
-
-    return (data || []).length > 0;
-  }
-
-  async function alterarStatusProduto(produto) {
-    if (!exigirAdministrador()) return;
-
-    const novoStatus = !produto.ativo;
-
-    const confirmacao = novoStatus
-      ? `Deseja reativar o produto "${produto.nome}"?`
-      : `Deseja desativar o produto "${produto.nome}"? Ele deixará de aparecer nos novos pedidos.`;
-
-    if (!confirm(confirmacao)) return;
-
-    try {
-      const { error } = await supabase
-        .from("produtos")
-        .update({ ativo: novoStatus })
-        .eq("id", produto.id);
-
-      if (error) throw error;
-
-      await carregarProdutos();
-      mostrarProdutos();
-
-      mensagem(
-        novoStatus
-          ? "Produto reativado."
-          : "Produto desativado."
-      );
-
-    } catch (erro) {
-      mostrarErro("Não foi possível alterar a situação do produto.", erro);
-    }
-  }
-
-  function formularioProduto(produto = null) {
-    limpar();
-
-    const categorias = [
-      "Comida",
-      "Bebida",
-      "Petiscos",
-      "Drinks",
-      "Bebidas sem álcool"
-    ];
-
-    painel.innerHTML = `
-      <h2>${produto ? "Editar produto" : "Novo produto"}</h2>
-
-      <label for="codigo">Código</label>
-      <input id="codigo" autocomplete="off">
-
-      <label for="nome">Nome</label>
-      <input id="nome" autocomplete="off">
-
-      <label for="categoria">Categoria</label>
-      <select id="categoria">
-        <option value="">Selecione</option>
-        ${categorias.map(c =>
-          `<option value="${escapar(c)}">${escapar(c)}</option>`
-        ).join("")}
-      </select>
-
-      <label for="preco">Preço de venda</label>
-      <input id="preco" type="number" min="0" step="0.01">
-
-      <label for="custo">Custo</label>
-      <input id="custo" type="number" min="0" step="0.01">
-
-      <label for="estoque">
-        ${produto ? "Estoque atual (alterado em Movimentações)" : "Estoque inicial"}
-      </label>
-      <input id="estoque" type="number" min="0" step="0.001"
-        ${produto ? "readonly" : ""}>
-
-      <label for="minimo">Estoque mínimo</label>
-      <input id="minimo" type="number" min="0" step="0.001">
-
-      ${produto ? `
-        <p>Situação atual: ${produto.ativo ? "Ativo" : "Inativo"}</p>
-      ` : ""}
-
-      <button id="salvar">Salvar</button>
-      <button id="cancelar">Voltar</button>
-
-      <p id="avisoProduto"></p>
-    `;
-
-    if (produto) {
-      document.querySelector("#codigo").value = produto.codigo || "";
-      document.querySelector("#nome").value = produto.nome || "";
-      document.querySelector("#categoria").value = produto.categoria || "";
-      document.querySelector("#preco").value = produto.preco_venda ?? 0;
-      document.querySelector("#custo").value = produto.custo ?? 0;
-      document.querySelector("#estoque").value = produto.estoque ?? 0;
-      document.querySelector("#minimo").value = produto.estoque_minimo ?? 0;
-    }
-
-    document.querySelector("#salvar").onclick =
-      () => salvarProduto(produto);
-
-    document.querySelector("#cancelar").onclick = mostrarProdutos;
-  }
-
-  async function salvarProduto(produto) {
-    const registro = {
-      codigo: document.querySelector("#codigo").value.trim() || null,
-      nome: document.querySelector("#nome").value.trim(),
-      categoria: document.querySelector("#categoria").value,
-      preco_venda: Number(document.querySelector("#preco").value),
-      custo: Number(document.querySelector("#custo").value || 0),
-      estoque_minimo: Number(document.querySelector("#minimo").value || 0)
-    };
-
-    const estoqueInicial = Number(
-      document.querySelector("#estoque").value || 0
-    );
-
-    const aviso = document.querySelector("#avisoProduto");
-    const botao = document.querySelector("#salvar");
-
-    if (!registro.nome || !registro.categoria ||
-        !Number.isFinite(registro.preco_venda) ||
-        registro.preco_venda < 0 ||
-        !Number.isFinite(registro.custo) ||
-        registro.custo < 0 ||
-        !Number.isFinite(registro.estoque_minimo) ||
-        registro.estoque_minimo < 0 ||
-        (!produto &&
-          (!Number.isFinite(estoqueInicial) || estoqueInicial < 0))) {
-      aviso.textContent =
-        "Confira nome, categoria, preço, custo e quantidades.";
-      return;
-    }
-
-    botao.disabled = true;
-    botao.textContent = "Salvando...";
-
-    try {
-      if (registro.codigo) {
-        const duplicado = await verificarCodigoDuplicado(
-          registro.codigo,
-          produto
-        );
-
-        if (duplicado) {
-          aviso.textContent =
-            "Já existe outro produto cadastrado com esse código.";
-          botao.disabled = false;
-          botao.textContent = "Salvar";
-          return;
-        }
-      }
-
-      let resultado;
-
-      if (produto) {
-        resultado = await supabase
-          .from("produtos")
-          .update(registro)
-          .eq("id", produto.id);
-      } else {
-        resultado = await supabase
-          .from("produtos")
-          .insert({
-            ...registro,
-            estoque: estoqueInicial,
-            ativo: true
-          });
-      }
-
-      if (resultado.error) throw resultado.error;
-
-      await carregarProdutos();
-      mostrarProdutos();
-
-      mensagem(
-        produto
-          ? "Produto atualizado com sucesso."
-          : "Produto cadastrado com sucesso."
-      );
-
-    } catch (erro) {
-      mostrarErro("Não foi possível salvar o produto.", erro);
-
-      if (document.querySelector("#salvar")) {
-        botao.disabled = false;
-        botao.textContent = "Salvar";
-      }
-    }
-  }
-
-  // ESTOQUE E MOVIMENTAÇÕES MANUAIS
-
-  function exigirAdministrador() {
+  function mostrarFormularioProduto(produto = null) {
     if (!temPermissao("administrador")) {
-      mensagem("Apenas o administrador pode acessar esta área.");
-      mostrarInicio();
-      return false;
+      mensagem("Somente o administrador pode cadastrar produtos.");
+      return;
     }
 
-    return true;
-  }
+    const editando = Boolean(produto);
 
-  function mostrarEstoque() {
-    if (!exigirAdministrador()) return;
+    limparPainel();
 
-    limpar();
+    const categoriaExistente = produto?.categoria || "";
 
-    const ativos = produtos.filter(p => p.ativo);
-    const criticos = ativos.filter(p => Number(p.estoque) <= 0);
-    const baixos = ativos.filter(p =>
-      Number(p.estoque) > 0 &&
-      Number(p.estoque) <= Number(p.estoque_minimo || 0)
+    let opcoesCategoria = categoriasProdutos.map(categoria => `
+      <option value="${escapar(categoria.valor)}">
+        ${escapar(categoria.nome)}
+      </option>
+    `).join("");
+
+    const categoriaNormalizada = categoriaExistente.trim().toLowerCase();
+
+    const categoriaConhecida = categoriasProdutos.some(
+      categoria => categoria.valor === categoriaNormalizada
     );
 
-    painel.innerHTML = `
-      <h2>Estoque</h2>
-      <p>Produtos ativos: ${ativos.length}</p>
-      <p>Estoque zerado: ${criticos.length}</p>
-      <p>Estoque baixo: ${baixos.length}</p>
-
-      <button id="registrarMovimento">Registrar movimentação</button>
-      <button id="historicoMovimento">Histórico de movimentações</button>
-      <button id="voltar">Voltar</button>
-
-      <h3>Produtos com estoque baixo ou zerado</h3>
-      <div id="listaEstoque"></div>
-    `;
-
-    document.querySelector("#registrarMovimento").onclick =
-      mostrarFormularioMovimentacao;
-
-    document.querySelector("#historicoMovimento").onclick =
-      mostrarHistoricoMovimentacoes;
-
-    document.querySelector("#voltar").onclick = mostrarInicio;
-
-    const lista = document.querySelector("#listaEstoque");
-    const alerta = [...criticos, ...baixos];
-
-    if (!alerta.length) {
-      lista.textContent = "Nenhum produto com estoque baixo ou zerado.";
-      return;
+    if (editando && categoriaExistente && !categoriaConhecida) {
+      opcoesCategoria += `
+        <option value="${escapar(categoriaExistente)}">
+          ${escapar(categoriaExistente)}
+        </option>
+      `;
     }
 
-    alerta.forEach(produto => {
-      const linha = document.createElement("p");
+    painel.innerHTML = `
+      <h2>${editando ? "Editar produto" : "Novo produto"}</h2>
 
-      linha.textContent =
-        `${produto.nome} — saldo: ${produto.estoque} — mínimo: ${produto.estoque_minimo}`;
+      <label>Código (opcional)</label>
+      <input id="codigo" maxlength="100" placeholder="Código do produto">
 
-      lista.appendChild(linha);
-    });
+      <label>Nome do produto</label>
+      <input id="nome" maxlength="150" placeholder="Ex.: Água mineral">
+
+      <label>Categoria</label>
+      <select id="categoria">
+        <option value="">Selecione uma categoria</option>
+        ${opcoesCategoria}
+      </select>
+
+      <label>Preço de venda (R$)</label>
+      <input id="preco" type="number" min="0" step="0.01"
+        placeholder="0,00">
+
+      <label>Custo de compra (R$)</label>
+      <input id="custo" type="number" min="0" step="0.01"
+        placeholder="0,00">
+
+      ${editando ? `
+        <label>Estoque atual</label>
+        <input id="estoque" type="number" value="${Number(produto.estoque || 0)}" disabled>
+        <p>O estoque não é alterado na edição do produto.</p>
+      ` : `
+        <label>Estoque inicial</label>
+        <input id="estoque" type="number" min="0" step="0.001" value="0">
+      `}
+
+      <label>Estoque mínimo</label>
+      <input id="estoqueMinimo" type="number" min="0" step="0.001"
+        placeholder="0">
+
+      <button id="salvarProduto">Salvar produto</button>
+      <button id="cancelar">Cancelar</button>
+    `;
+
+    document.querySelector("#codigo").value = produto?.codigo || "";
+    document.querySelector("#nome").value = produto?.nome || "";
+
+    document.querySelector("#categoria").value =
+      categoriaConhecida
+        ? categoriaNormalizada
+        : categoriaExistente;
+
+    document.querySelector("#preco").value =
+      produto?.preco_venda ?? "";
+
+    document.querySelector("#custo").value =
+      produto?.custo ?? "";
+
+    if (!editando) {
+      document.querySelector("#estoque").value = 0;
+    }
+
+    document.querySelector("#estoqueMinimo").value =
+      produto?.estoque_minimo ?? 0;
+
+    document.querySelector("#salvarProduto").onclick =
+      () => salvarProduto(produto?.id);
+
+    document.querySelector("#cancelar").onclick =
+      mostrarListaProdutos;
   }
 
-  function mostrarFormularioMovimentacao() {
-    if (!exigirAdministrador()) return;
-
-    const ativos = produtos.filter(p => p.ativo);
-
-    if (!ativos.length) {
-      mensagem("Cadastre pelo menos um produto ativo antes de movimentar o estoque.");
+  async function salvarProduto(id) {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode salvar produtos.");
       return;
     }
 
-    limpar();
+    const codigo = document.querySelector("#codigo").value.trim();
+    const nome = document.querySelector("#nome").value.trim();
+    const categoria = document.querySelector("#categoria").value;
 
-    painel.innerHTML = `
-      <h2>Registrar movimentação</h2>
+    const precoTexto = document.querySelector("#preco").value;
+    const custoTexto = document.querySelector("#custo").value;
+    const estoqueMinimoTexto =
+      document.querySelector("#estoqueMinimo").value;
 
-      <label for="movProduto">Produto</label>
-      <select id="movProduto">
-        <option value="">Selecione</option>
-        ${ativos.map(p =>
-          `<option value="${escapar(p.id)}">${escapar(p.nome)} — saldo: ${escapar(p.estoque)}</option>`
-        ).join("")}
-      </select>
+    const preco = Number(precoTexto);
+    const custo = Number(custoTexto);
+    const estoqueMinimo = Number(estoqueMinimoTexto);
 
-      <label for="movTipo">Tipo</label>
-      <select id="movTipo">
-        <option value="entrada">Entrada</option>
-        <option value="saida">Saída</option>
-        <option value="ajuste">Ajuste de saldo</option>
-      </select>
+    if (!nome || !categoria) {
+      mensagem("Preencha o nome e a categoria do produto.");
+      return;
+    }
 
-      <label id="movQuantidadeLabel" for="movQuantidade">Quantidade</label>
-      <input id="movQuantidade" type="number" min="0.001" step="0.001">
+    if (
+      precoTexto === "" ||
+      custoTexto === "" ||
+      estoqueMinimoTexto === ""
+    ) {
+      mensagem("Preencha o preço, custo e estoque mínimo.");
+      return;
+    }
 
-      <label for="movMotivo">Motivo</label>
-      <textarea id="movMotivo" rows="3"
-        placeholder="Informe o motivo da movimentação"></textarea>
+    if (
+      [preco, custo, estoqueMinimo].some(
+        valor => !Number.isFinite(valor) || valor < 0
+      )
+    ) {
+      mensagem("Confira os valores informados. Não são permitidos valores negativos.");
+      return;
+    }
 
-      <button id="salvarMovimento">Registrar</button>
-      <button id="cancelarMovimento">Voltar ao estoque</button>
-
-      <p id="avisoMovimento"></p>
-    `;
-
-    const tipo = document.querySelector("#movTipo");
-    const quantidade = document.querySelector("#movQuantidade");
-    const rotulo = document.querySelector("#movQuantidadeLabel");
-
-    tipo.onchange = () => {
-      const ajuste = tipo.value === "ajuste";
-
-      rotulo.textContent = ajuste
-        ? "Novo saldo contado"
-        : "Quantidade";
-
-      quantidade.min = ajuste ? "0" : "0.001";
-      quantidade.value = "";
+    const dados = {
+      codigo: codigo || null,
+      nome,
+      categoria,
+      preco_venda: preco,
+      custo,
+      estoque_minimo: estoqueMinimo
     };
 
-    document.querySelector("#salvarMovimento").onclick =
-      registrarMovimentacaoEstoque;
+    if (!id) {
+      const estoqueTexto = document.querySelector("#estoque").value;
+      const estoque = Number(estoqueTexto);
 
-    document.querySelector("#cancelarMovimento").onclick =
-      mostrarEstoque;
-  }
-
-  async function registrarMovimentacaoEstoque() {
-    if (!exigirAdministrador()) return;
-
-    const produtoId = document.querySelector("#movProduto").value;
-    const tipo = document.querySelector("#movTipo").value;
-    const quantidade = Number(
-      document.querySelector("#movQuantidade").value
-    );
-    const motivo = document.querySelector("#movMotivo").value.trim();
-
-    const aviso = document.querySelector("#avisoMovimento");
-    const botao = document.querySelector("#salvarMovimento");
-
-    if (!produtoId || !Number.isFinite(quantidade) ||
-        (tipo === "ajuste" ? quantidade < 0 : quantidade <= 0) ||
-        !motivo) {
-      aviso.textContent =
-        "Selecione o produto, informe uma quantidade válida e descreva o motivo.";
-      return;
-    }
-
-    botao.disabled = true;
-    botao.textContent = "Registrando...";
-
-    try {
-      const { data, error } = await supabase.rpc(
-        "registrar_movimentacao_estoque",
-        {
-          p_produto_id: produtoId,
-          p_tipo: tipo,
-          p_quantidade: quantidade,
-          p_motivo: motivo
-        }
-      );
-
-      if (error) throw error;
-
-      const resultado = Array.isArray(data) ? data[0] : data;
-
-      await carregarProdutos();
-
-      mensagem(
-        `Movimentação registrada. Estoque: ${resultado?.estoque_anterior ?? "—"} → ${resultado?.estoque_novo ?? "—"}.`
-      );
-
-      mostrarEstoque();
-
-    } catch (erro) {
-      mostrarErro("Não foi possível registrar a movimentação.", erro);
-
-      botao.disabled = false;
-      botao.textContent = "Registrar";
-    }
-  }
-
-  async function mostrarHistoricoMovimentacoes() {
-    if (!exigirAdministrador()) return;
-
-    limpar();
-
-    painel.innerHTML = `
-      <h2>Histórico de movimentações</h2>
-
-      <button id="atualizarHistorico">Atualizar</button>
-      <button id="voltarEstoque">Voltar ao estoque</button>
-
-      <div id="listaHistorico">Carregando...</div>
-    `;
-
-    document.querySelector("#atualizarHistorico").onclick =
-      mostrarHistoricoMovimentacoes;
-
-    document.querySelector("#voltarEstoque").onclick =
-      mostrarEstoque;
-
-    try {
-      const { data, error } = await supabase
-        .from("movimentacoes_estoque")
-        .select("id,produto_id,operador_id,pedido_id,tipo,quantidade,motivo,criado_em")
-        .is("pedido_id", null)
-        .order("criado_em", { ascending: false });
-
-      if (error) throw error;
-
-      const movimentos = data || [];
-
-      const produtoIds = [
-        ...new Set(movimentos.map(m => m.produto_id).filter(Boolean))
-      ];
-
-      const operadorIds = [
-        ...new Set(movimentos.map(m => m.operador_id).filter(Boolean))
-      ];
-
-      const mapaProdutos = new Map();
-      const mapaOperadores = new Map();
-
-      if (produtoIds.length) {
-        const resultadoProdutos = await supabase
-          .from("produtos")
-          .select("id,nome")
-          .in("id", produtoIds);
-
-        if (resultadoProdutos.error) {
-          throw resultadoProdutos.error;
-        }
-
-        (resultadoProdutos.data || []).forEach(produto => {
-          mapaProdutos.set(produto.id, produto.nome);
-        });
-      }
-
-      if (operadorIds.length) {
-        const resultadoOperadores = await supabase
-          .from("perfis_usuarios")
-          .select("id,nome")
-          .in("id", operadorIds);
-
-        if (resultadoOperadores.error) {
-          throw resultadoOperadores.error;
-        }
-
-        (resultadoOperadores.data || []).forEach(operador => {
-          mapaOperadores.set(operador.id, operador.nome);
-        });
-      }
-
-      const lista = document.querySelector("#listaHistorico");
-
-      lista.innerHTML = "";
-
-      if (!movimentos.length) {
-        lista.textContent =
-          "Ainda não há movimentações manuais registradas.";
+      if (
+        estoqueTexto === "" ||
+        !Number.isFinite(estoque) ||
+        estoque < 0
+      ) {
+        mensagem("Informe um estoque inicial válido.");
         return;
       }
 
-      movimentos.forEach(movimento => {
-        const linha = document.createElement("div");
-        linha.className = "item-pedido";
-
-        const dataMovimento = movimento.criado_em
-          ? new Date(movimento.criado_em).toLocaleString("pt-BR")
-          : "Data não informada";
-
-        const produtoNome = mapaProdutos.get(movimento.produto_id) || "Produto não encontrado";
-        const operadorNome = mapaOperadores.get(movimento.operador_id) || "Usuário não identificado";
-
-        linha.innerHTML = `
-          <div>
-            <strong>${escapar(produtoNome)}</strong> — <span style="text-transform: uppercase;">${escapar(movimento.tipo)}</span>: ${escapar(movimento.quantidade)}
-            <br>
-            <small>Data: ${escapar(dataMovimento)} | Operador: ${escapar(operadorNome)}</small>
-            <br>
-            <small>Motivo: ${escapar(movimento.motivo || "Não informado")}</small>
-          </div>
-        `;
-
-        lista.appendChild(linha);
-      });
-
-    } catch (erro) {
-      mostrarErro("Não foi possível carregar o histórico de movimentações.", erro);
+      dados.estoque = estoque;
+      dados.ativo = true;
     }
-  }
 
-  async function carregarMesas() {
-    try {
-      const { data, error } = await supabase
-        .from("mesas")
-        .select("*")
-        .order("numero");
+    const botao = document.querySelector("#salvarProduto");
+    botao.disabled = true;
+    botao.textContent = "Salvando...";
 
-      if (error) throw error;
-      mesas = data || [];
-    } catch (erro) {
-      console.error("Erro ao carregar mesas:", erro);
+    let resultado;
+
+    if (id) {
+      resultado = await supabase
+        .from("produtos")
+        .update(dados)
+        .eq("id", id);
+    } else {
+      resultado = await supabase
+        .from("produtos")
+        .insert(dados);
     }
-  }
 
-  function mostrarMesas() {
-    limpar();
+    if (resultado.error) {
+      botao.disabled = false;
+      botao.textContent = "Salvar produto";
 
-    painel.innerHTML = `
-      <h2>Controle de Mesas</h2>
-      <button id="voltarInicio">Voltar ao Início</button>
-      <div id="gridMesas" style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;"></div>
-    `;
+      if (resultado.error.code === "23505") {
+        mensagem("Este código já está cadastrado em outro produto. Informe outro código.");
+        return;
+      }
 
-    document.querySelector("#voltarInicio").onclick = mostrarInicio;
-
-    const container = document.querySelector("#gridMesas");
-
-    if (!mesas.length) {
-      container.innerHTML = "<p>Nenhuma mesa cadastrada.</p>";
+      erro("Erro ao salvar produto.", resultado.error);
       return;
     }
 
+    mensagem(
+      id
+        ? "Produto atualizado com sucesso!"
+        : "Produto cadastrado com sucesso!"
+    );
+
+    await carregarProdutosSilencioso();
+    mostrarListaProdutos();
+  }
+
+  async function alternarProduto(produto) {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode alterar produtos.");
+      return;
+    }
+
+    const novaSituacao = !produto.ativo;
+
+    const confirmacao = novaSituacao
+      ? `Deseja reativar o produto "${produto.nome}"?`
+      : `Deseja desativar o produto "${produto.nome}"?`;
+
+    if (!confirm(confirmacao)) return;
+
+    const { error } = await supabase
+      .from("produtos")
+      .update({ ativo: novaSituacao })
+      .eq("id", produto.id);
+
+    if (error) {
+      erro("Não foi possível alterar a situação do produto.", error);
+      return;
+    }
+
+    mensagem(
+      novaSituacao
+        ? "Produto reativado com sucesso!"
+        : "Produto desativado com sucesso!"
+    );
+
+    await carregarProdutosSilencioso();
+    mostrarListaProdutos();
+  }
+
+  // =====================================================
+  // DADOS DAS MESAS E PEDIDOS
+  // =====================================================
+
+  async function carregarDadosMesas() {
+    const [resultadoMesas, resultadoPedidos] = await Promise.all([
+      supabase
+        .from("mesas")
+        .select("id, numero, status")
+        .order("numero"),
+
+      supabase
+        .from("pedidos")
+        .select("id, mesa_id, garcom_id, status, valor_total, aberto_em, conta_solicitada_em")
+        .eq("status", "aberto")
+    ]);
+
+    if (resultadoMesas.error) {
+      erro("Erro ao carregar mesas.", resultadoMesas.error);
+      return;
+    }
+
+    if (resultadoPedidos.error) {
+      erro("Erro ao carregar pedidos.", resultadoPedidos.error);
+      return;
+    }
+
+    mesas = resultadoMesas.data || [];
+    pedidosAbertos = resultadoPedidos.data || [];
+  }
+
+  function pedidoDaMesa(mesaId) {
+    return pedidosAbertos.find(p => p.mesa_id === mesaId);
+  }
+
+  // =====================================================
+  // MESAS
+  // =====================================================
+
+  async function mostrarMesas() {
+    await carregarDadosMesas();
+
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Controle de Mesas</h2>
+      <p>Selecione uma mesa.</p>
+      <div id="mesas" class="mesas"></div>
+      <button id="voltar">Voltar</button>
+    `;
+
+    document.querySelector("#voltar").onclick = mostrarInicio;
+
+    const area = document.querySelector("#mesas");
+
     mesas.forEach(mesa => {
-      const card = document.createElement("button");
-      card.style.padding = "15px";
-      card.style.minWidth = "100px";
-      card.textContent = `Mesa ${mesa.numero} (${mesa.status || "Livre"})`;
-      container.appendChild(card);
+      const pedido = pedidoDaMesa(mesa.id);
+      const botao = document.createElement("button");
+
+      botao.className = "mesa";
+      botao.textContent = `Mesa ${mesa.numero}`;
+
+      const status = document.createElement("small");
+      status.textContent = mesa.status || "livre";
+
+      botao.appendChild(document.createElement("br"));
+      botao.appendChild(status);
+
+      if (mesa.status === "ocupada") {
+        botao.classList.add("ocupada");
+      } else if (mesa.status === "aguardando_pagamento") {
+        botao.classList.add("aguardando");
+      } else {
+        botao.classList.add("livre");
+      }
+
+      botao.onclick = () => selecionarMesa(mesa, pedido);
+
+      area.appendChild(botao);
+    });
+
+    if (!mesas.length) {
+      area.textContent = "Nenhuma mesa encontrada no banco de dados.";
+    }
+  }
+
+  async function selecionarMesa(mesa, pedido) {
+    mesaAtual = mesa;
+    pedidoAtual = pedido || null;
+
+    if (!pedidoAtual && mesa.status !== "livre") {
+      mensagem("Esta mesa não está livre e não possui pedido aberto localizado.");
+      await mostrarMesas();
+      return;
+    }
+
+    if (!pedidoAtual) {
+      await abrirMesa(mesa);
+      return;
+    }
+
+    await carregarItensPedido();
+    mostrarPedido();
+  }
+
+  // =====================================================
+  // ABRIR MESA
+  // =====================================================
+
+  async function abrirMesa(mesa) {
+    if (mesa.status !== "livre") {
+      mensagem("Esta mesa não está livre.");
+      return;
+    }
+
+    const { data, error } = await supabase.rpc(
+      "abrir_mesa",
+      {
+        p_mesa_id: mesa.id
+      }
+    );
+
+    if (error) {
+      erro("Não foi possível abrir a mesa.", error);
+      return;
+    }
+
+    await carregarDadosMesas();
+
+    pedidoAtual = pedidosAbertos.find(p => p.mesa_id === mesa.id);
+
+    if (!pedidoAtual && data) {
+      pedidoAtual = Array.isArray(data) ? data[0] : data;
+    }
+
+    if (!pedidoAtual) {
+      mensagem("Mesa aberta. Atualizando os dados...");
+      await mostrarMesas();
+      return;
+    }
+
+    mesaAtual = mesa;
+    await carregarItensPedido();
+    mostrarPedido();
+  }
+
+  // =====================================================
+  // ITENS DO PEDIDO
+  // =====================================================
+
+  async function carregarItensPedido() {
+    if (!pedidoAtual) {
+      itensAtuais = [];
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("itens_pedido")
+      .select("id, pedido_id, produto_id, quantidade, preco_unitario, subtotal, observacao, status_producao")
+      .eq("pedido_id", pedidoAtual.id)
+      .order("criado_em");
+
+    if (error) {
+      erro("Erro ao carregar itens do pedido.", error);
+      return;
+    }
+
+    itensAtuais = data || [];
+  }
+
+  // =====================================================
+  // TELA DO PEDIDO
+  // =====================================================
+
+  function mostrarPedido() {
+    if (!mesaAtual || !pedidoAtual) {
+      mostrarMesas();
+      return;
+    }
+
+    limparPainel();
+
+    const podeAdicionar = temPermissao(
+      "administrador", "caixa", "garcom"
+    );
+
+    painel.innerHTML = `
+      <h2>Mesa ${mesaAtual.numero}</h2>
+      <p>Pedido aberto</p>
+
+      ${podeAdicionar ? `
+        <label>Produto</label>
+        <select id="produto">
+          <option value="">Selecione um produto</option>
+          ${produtos.filter(p => p.ativo).map(p => `
+            <option value="${escapar(p.id)}">
+              ${escapar(p.nome)} - ${dinheiro(p.preco_venda)}
+            </option>
+          `).join("")}
+        </select>
+
+        <label>Quantidade</label>
+        <input id="quantidade" type="number" min="0.001"
+          step="0.001" value="1">
+
+        <label>Observação</label>
+        <input id="observacao" placeholder="Ex.: sem cebola">
+
+        <button id="adicionar">Adicionar item</button>
+      ` : ""}
+
+      <h3>Itens da mesa</h3>
+      <div id="lista"></div>
+
+      <h2 id="total"></h2>
+
+      <button id="solicitarConta">Solicitar fechamento da conta</button>
+      <button id="voltar">Voltar às mesas</button>
+    `;
+
+    if (podeAdicionar) {
+      document.querySelector("#adicionar").onclick = adicionarItem;
+    }
+
+    document.querySelector("#solicitarConta").onclick =
+      solicitarFechamento;
+
+    document.querySelector("#voltar").onclick = mostrarMesas;
+
+    atualizarListaItens();
+  }
+
+  function atualizarListaItens() {
+    const lista = document.querySelector("#lista");
+    const total = document.querySelector("#total");
+
+    if (!lista || !total) return;
+
+    lista.innerHTML = "";
+
+    let soma = 0;
+
+    itensAtuais.forEach(item => {
+      const produto = produtos.find(p => p.id === item.produto_id);
+      const nome = produto?.nome || "Produto";
+
+      soma += Number(item.subtotal || 0);
+
+      const linha = document.createElement("div");
+      linha.className = "item-pedido";
+
+      const info = document.createElement("div");
+      info.className = "item-info";
+
+      const nomeItem = document.createElement("span");
+      nomeItem.className = "item-nome";
+      nomeItem.textContent = `${item.quantidade}x ${nome}`;
+
+      const valor = document.createElement("span");
+      valor.className = "item-valor";
+      valor.textContent = dinheiro(item.subtotal);
+
+      info.append(nomeItem, valor);
+      linha.appendChild(info);
+
+      const podeRemover =
+        temPermissao("administrador", "caixa") ||
+        (
+          temPermissao("garcom") &&
+          pedidoAtual.garcom_id === usuarioAtual.id
+        );
+
+      if (podeRemover && item.status_producao === "pendente") {
+        const remover = document.createElement("button");
+        remover.textContent = "Remover";
+        remover.onclick = () => removerItem(item.id);
+        linha.appendChild(remover);
+      }
+
+      lista.appendChild(linha);
+    });
+
+    total.textContent = "Total: " + dinheiro(soma);
+  }
+
+  // =====================================================
+  // ADICIONAR ITEM
+  // =====================================================
+
+  async function adicionarItem() {
+    const produtoId = document.querySelector("#produto").value;
+    const quantidade = Number(
+      document.querySelector("#quantidade").value
+    );
+    const observacao =
+      document.querySelector("#observacao").value.trim();
+
+    if (!produtoId || !Number.isFinite(quantidade) || quantidade <= 0) {
+      mensagem("Selecione um produto e informe uma quantidade válida.");
+      return;
+    }
+
+    const { error } = await supabase.rpc(
+      "adicionar_item_pedido",
+      {
+        p_pedido_id: pedidoAtual.id,
+        p_produto_id: produtoId,
+        p_quantidade: quantidade,
+        p_observacao: observacao || null
+      }
+    );
+
+    if (error) {
+      erro("Não foi possível adicionar o item.", error);
+      return;
+    }
+
+    await carregarDadosMesas();
+    pedidoAtual = pedidoDaMesa(mesaAtual.id);
+    await carregarItensPedido();
+    mostrarPedido();
+  }
+
+  // =====================================================
+  // REMOVER ITEM
+  // =====================================================
+
+  async function removerItem(itemId) {
+    if (!confirm("Deseja remover este item do pedido?")) return;
+
+    const { error } = await supabase.rpc(
+      "remover_item_pedido",
+      { p_item_id: itemId }
+    );
+
+    if (error) {
+      erro("Não foi possível remover o item.", error);
+      return;
+    }
+
+    await carregarDadosMesas();
+    pedidoAtual = pedidoDaMesa(mesaAtual.id);
+    await carregarItensPedido();
+    mostrarPedido();
+  }
+
+  // =====================================================
+  // SOLICITAR FECHAMENTO DA CONTA
+  // =====================================================
+
+  async function solicitarFechamento() {
+    if (!confirm("Solicitar o fechamento desta conta?")) return;
+
+    const { error } = await supabase.rpc(
+      "solicitar_fechamento_conta",
+      { p_pedido_id: pedidoAtual.id }
+    );
+
+    if (error) {
+      erro("Não foi possível solicitar o fechamento.", error);
+      return;
+    }
+
+    mensagem("Conta enviada para o caixa.");
+    await carregarDadosMesas();
+    mostrarMesas();
+  }
+
+  // =====================================================
+  // CONTAS AGUARDANDO PAGAMENTO
+  // =====================================================
+
+  async function carregarContasAguardando() {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Contas aguardando pagamento</h2>
+      <p>Carregando...</p>
+    `;
+
+    const { data, error } = await supabase.rpc(
+      "listar_contas_aguardando_pagamento"
+    );
+
+    if (error) {
+      erro("Erro ao carregar contas.", error);
+      mostrarInicio();
+      return;
+    }
+
+    mostrarListaContas(data || []);
+  }
+
+  function mostrarListaContas(contas) {
+    limparPainel();
+
+    painel.innerHTML = `
+      <h2>Contas aguardando pagamento</h2>
+      <div id="listaContas"></div>
+      <button id="atualizar">Atualizar</button>
+      <button id="voltar">Voltar</button>
+    `;
+
+    document.querySelector("#atualizar").onclick =
+      carregarContasAguardando;
+
+    document.querySelector("#voltar").onclick = mostrarInicio;
+
+    const lista = document.querySelector("#listaContas");
+
+    if (!contas.length) {
+      lista.textContent = "Nenhuma conta aguardando pagamento.";
+      return;
+    }
+
+    contas.forEach(conta => {
+      const item = document.createElement("div");
+      item.className = "item-pedido";
+
+      const info = document.createElement("div");
+      info.className = "item-info";
+
+      const titulo = document.createElement("strong");
+      titulo.textContent =
+        `Mesa ${conta.numero_mesa ?? conta.mesa_numero ?? ""}`;
+
+      const valor = document.createElement("span");
+      valor.textContent = dinheiro(conta.valor_total);
+
+      info.append(titulo, valor);
+
+      const pagar = document.createElement("button");
+      pagar.textContent = "Registrar pagamento";
+      pagar.onclick = () => mostrarPagamento(conta);
+
+      item.append(info, pagar);
+      lista.appendChild(item);
     });
   }
 
-  async function carregarContasAguardando() {
-    limpar();
+  // =====================================================
+  // PAGAMENTO
+  // =====================================================
+
+  function mostrarPagamento(conta) {
+    limparPainel();
+
     painel.innerHTML = `
-      <h2>Contas Aguardando Pagamento</h2>
-      <button id="voltarContas">Voltar</button>
-      <p style="margin-top: 10px;">Nenhuma conta pendente no momento.</p>
+      <h2>Registrar pagamento</h2>
+      <p>Valor da conta: <strong>${dinheiro(conta.valor_total)}</strong></p>
+
+      <label>Forma de pagamento</label>
+      <select id="forma">
+        <option value="dinheiro">Dinheiro</option>
+        <option value="pix">Pix</option>
+        <option value="debito">Débito</option>
+        <option value="credito">Crédito</option>
+      </select>
+
+      <label>Valor do pagamento</label>
+      <input id="valor" type="number" min="0.01" step="0.01"
+        value="${Number(conta.valor_total || 0)}">
+
+      <div id="campoRecebido">
+        <label>Valor recebido em dinheiro</label>
+        <input id="recebido" type="number" min="0" step="0.01">
+      </div>
+
+      <button id="confirmar">Confirmar pagamento</button>
+      <button id="voltar">Voltar</button>
     `;
-    document.querySelector("#voltarContas").onclick = mostrarInicio;
+
+    const forma = document.querySelector("#forma");
+    const campoRecebido = document.querySelector("#campoRecebido");
+
+    forma.onchange = () => {
+      campoRecebido.style.display =
+        forma.value === "dinheiro" ? "block" : "none";
+    };
+
+    forma.onchange();
+
+    document.querySelector("#confirmar").onclick =
+      () => registrarPagamento(conta);
+
+    document.querySelector("#voltar").onclick =
+      carregarContasAguardando;
   }
 
+  async function registrarPagamento(conta) {
+    const forma = document.querySelector("#forma").value;
+    const valor = Number(document.querySelector("#valor").value);
+    const recebido = forma === "dinheiro"
+      ? Number(document.querySelector("#recebido").value)
+      : null;
+
+    if (!Number.isFinite(valor) || valor <= 0) {
+      mensagem("Informe um valor de pagamento válido.");
+      return;
+    }
+
+    if (
+      forma === "dinheiro" &&
+      (!Number.isFinite(recebido) || recebido < valor)
+    ) {
+      mensagem("O valor recebido precisa ser igual ou maior que o pagamento.");
+      return;
+    }
+
+    const { data, error } = await supabase.rpc(
+      "registrar_pagamento",
+      {
+        p_pedido_id: conta.pedido_id,
+        p_forma_pagamento: forma,
+        p_valor: valor,
+        p_valor_recebido: recebido
+      }
+    );
+
+    if (error) {
+      erro(
+        "Não foi possível registrar o pagamento. Confira se existe um caixa aberto para este operador.",
+        error
+      );
+      return;
+    }
+
+    if (data && typeof data === "object" && data.troco !== undefined) {
+      mensagem("Pagamento registrado. Troco: " + dinheiro(data.troco));
+    } else {
+      mensagem("Pagamento registrado com sucesso!");
+    }
+
+    await carregarDadosMesas();
+    await carregarContasAguardando();
+  }
+
+  // =====================================================
+  // ATUALIZAÇÃO EM TEMPO REAL
+  // =====================================================
+
   function iniciarRealtime() {
-    if (canalRealtime) return;
+    if (canalRealtime) {
+      supabase.removeChannel(canalRealtime);
+    }
 
     canalRealtime = supabase
-      .channel("mudancas-pdv")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "produtos" },
-        () => carregarProdutos()
-      )
+      .channel("ligeirinho-atualizacoes")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "mesas" },
-        () => carregarMesas()
+        atualizarDepoisDeMudanca
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "pedidos" },
+        atualizarDepoisDeMudanca
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "itens_pedido" },
+        atualizarDepoisDeMudanca
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "produtos" },
+        atualizarDepoisDeMudanca
       )
       .subscribe();
   }
 
-})();
+  async function atualizarDepoisDeMudanca() {
+    if (atualizacaoEmAndamento || !usuarioAtual) return;
+
+    atualizacaoEmAndamento = true;
+
+    try {
+      await carregarProdutosSilencioso();
+      await carregarDadosMesas();
+
+      if (mesaAtual && pedidoAtual) {
+        const pedidoAtualizado = pedidoDaMesa(mesaAtual.id);
+
+        if (!pedidoAtualizado) {
+          pedidoAtual = null;
+          itensAtuais = [];
+          mensagem("O pedido desta mesa foi encerrado ou alterado.");
+          mostrarMesas();
+        } else {
+          pedidoAtual = pedidoAtualizado;
+          await carregarItensPedido();
+
+          if (document.querySelector("#lista")) {
+            atualizarListaItens();
+          }
+        }
+      } else if (document.querySelector("#mesas")) {
+        mostrarMesas();
+      } else if (document.querySelector("#listaContas")) {
+        carregarContasAguardando();
+      } else if (document.querySelector("#listaProdutos")) {
+        renderizarListaProdutos();
+      }
+    } catch (e) {
+      console.error("Erro na atualização em tempo real:", e);
+    } finally {
+      atualizacaoEmAndamento = false;
+    }
+  }
+
+  // =====================================================
+  // INICIALIZAÇÃO
+  // =====================================================
+
+  const { data: sessao, error: erroSessao } =
+    await supabase.auth.getSession();
+
+  if (erroSessao) {
+    erro("Erro ao verificar sessão.", erroSessao);
+    mostrarLogin();
+    return;
+  }
+
+  if (sessao.session) {
+    await verificarUsuario();
+  } else {
+    mostrarLogin();
+  }
+});
