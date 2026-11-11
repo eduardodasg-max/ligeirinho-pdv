@@ -31,6 +31,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   let canalRealtime = null;
   let atualizacaoEmAndamento = false;
 
+  const categoriasProdutos = [
+    { valor: "comida", nome: "Comida" },
+    { valor: "bebida", nome: "Bebida" },
+    { valor: "petiscos", nome: "Petiscos" },
+    { valor: "drinks", nome: "Drinks" },
+    { valor: "bebidas sem álcool", nome: "Bebidas sem álcool" }
+  ];
+
+  let filtroProdutos = "ativos";
+  let pesquisaProdutos = "";
+
   const dinheiro = valor =>
     Number(valor || 0).toLocaleString("pt-BR", {
       style: "currency",
@@ -247,6 +258,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function carregarProdutos() {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode acessar os produtos.");
+      return;
+    }
+
     limparPainel();
 
     painel.innerHTML = `
@@ -259,28 +275,88 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function mostrarListaProdutos() {
+    if (!temPermissao("administrador")) {
+      mostrarInicio();
+      return;
+    }
+
     limparPainel();
 
     painel.innerHTML = `
       <h2>Cadastro de Produtos</h2>
+
       <button id="novoProduto">Novo produto</button>
-      <button id="voltar">Voltar</button>
+
+      <label>Pesquisar produto</label>
+      <input
+        id="pesquisaProduto"
+        type="search"
+        placeholder="Digite o nome ou código"
+        value="${escapar(pesquisaProdutos)}"
+      >
+
+      <label>Mostrar</label>
+      <select id="filtroProdutos">
+        <option value="ativos">Produtos ativos</option>
+        <option value="inativos">Produtos inativos</option>
+        <option value="todos">Todos os produtos</option>
+      </select>
+
       <div id="listaProdutos"></div>
+
+      <button id="voltar">Voltar</button>
     `;
+
+    const pesquisa = document.querySelector("#pesquisaProduto");
+    const filtro = document.querySelector("#filtroProdutos");
+
+    filtro.value = filtroProdutos;
 
     document.querySelector("#novoProduto").onclick =
       () => mostrarFormularioProduto();
 
     document.querySelector("#voltar").onclick = mostrarInicio;
 
+    pesquisa.oninput = () => {
+      pesquisaProdutos = pesquisa.value;
+      renderizarListaProdutos();
+    };
+
+    filtro.onchange = () => {
+      filtroProdutos = filtro.value;
+      renderizarListaProdutos();
+    };
+
+    renderizarListaProdutos();
+  }
+
+  function renderizarListaProdutos() {
     const lista = document.querySelector("#listaProdutos");
 
-    if (!produtos.length) {
-      lista.textContent = "Nenhum produto cadastrado.";
+    if (!lista) return;
+
+    lista.innerHTML = "";
+
+    let encontrados = produtos.filter(produto => {
+      if (filtroProdutos === "ativos" && !produto.ativo) return false;
+      if (filtroProdutos === "inativos" && produto.ativo) return false;
+
+      const termo = pesquisaProdutos.trim().toLowerCase();
+
+      if (!termo) return true;
+
+      return (
+        String(produto.nome || "").toLowerCase().includes(termo) ||
+        String(produto.codigo || "").toLowerCase().includes(termo)
+      );
+    });
+
+    if (!encontrados.length) {
+      lista.textContent = "Nenhum produto encontrado.";
       return;
     }
 
-    produtos.forEach(produto => {
+    encontrados.forEach(produto => {
       const item = document.createElement("div");
       item.className = "item-pedido";
 
@@ -291,55 +367,98 @@ document.addEventListener("DOMContentLoaded", async () => {
       nome.textContent = produto.nome;
 
       const detalhes = document.createElement("span");
-      detalhes.textContent =
-        `${produto.categoria} | ${dinheiro(produto.preco_venda)} | Estoque: ${produto.estoque}`;
 
-      info.append(nome, detalhes);
+      detalhes.textContent =
+        `${produto.codigo ? "Código: " + produto.codigo + " | " : ""}` +
+        `${produto.categoria} | ` +
+        `Venda: ${dinheiro(produto.preco_venda)} | ` +
+        `Estoque: ${produto.estoque}`;
+
+      const situacao = document.createElement("span");
+      situacao.textContent = produto.ativo ? "Ativo" : "Inativo";
+
+      info.append(nome, detalhes, situacao);
 
       const editar = document.createElement("button");
       editar.textContent = "Editar";
       editar.onclick = () => mostrarFormularioProduto(produto);
 
-      item.append(info, editar);
+      const alternar = document.createElement("button");
+      alternar.textContent = produto.ativo ? "Desativar" : "Reativar";
+      alternar.onclick = () => alternarProduto(produto);
+
+      item.append(info, editar, alternar);
       lista.appendChild(item);
     });
   }
 
   function mostrarFormularioProduto(produto = null) {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode cadastrar produtos.");
+      return;
+    }
+
     const editando = Boolean(produto);
 
     limparPainel();
 
+    const categoriaExistente = produto?.categoria || "";
+
+    let opcoesCategoria = categoriasProdutos.map(categoria => `
+      <option value="${escapar(categoria.valor)}">
+        ${escapar(categoria.nome)}
+      </option>
+    `).join("");
+
+    const categoriaNormalizada = categoriaExistente.trim().toLowerCase();
+
+    const categoriaConhecida = categoriasProdutos.some(
+      categoria => categoria.valor === categoriaNormalizada
+    );
+
+    if (editando && categoriaExistente && !categoriaConhecida) {
+      opcoesCategoria += `
+        <option value="${escapar(categoriaExistente)}">
+          ${escapar(categoriaExistente)}
+        </option>
+      `;
+    }
+
     painel.innerHTML = `
       <h2>${editando ? "Editar produto" : "Novo produto"}</h2>
 
-      <label>Código</label>
-      <input id="codigo">
+      <label>Código (opcional)</label>
+      <input id="codigo" maxlength="100" placeholder="Código do produto">
 
-      <label>Nome</label>
-      <input id="nome">
+      <label>Nome do produto</label>
+      <input id="nome" maxlength="150" placeholder="Ex.: Água mineral">
 
       <label>Categoria</label>
       <select id="categoria">
-        <option value="">Selecione</option>
-        <option>Comida</option>
-        <option>Bebida</option>
-        <option>Petiscos</option>
-        <option>Drinks</option>
-        <option>Bebidas sem álcool</option>
+        <option value="">Selecione uma categoria</option>
+        ${opcoesCategoria}
       </select>
 
-      <label>Preço de venda</label>
-      <input id="preco" type="number" min="0" step="0.01">
+      <label>Preço de venda (R$)</label>
+      <input id="preco" type="number" min="0" step="0.01"
+        placeholder="0,00">
 
-      <label>Custo</label>
-      <input id="custo" type="number" min="0" step="0.01">
+      <label>Custo de compra (R$)</label>
+      <input id="custo" type="number" min="0" step="0.01"
+        placeholder="0,00">
 
-      <label>Estoque</label>
-      <input id="estoque" type="number" min="0" step="0.01">
+      ${editando ? `
+        <label>Estoque atual</label>
+        <input id="estoque" type="number" value="${Number(produto.estoque || 0)}" disabled>
+        <p>O estoque não é alterado na edição do produto.</p>
+      ` : `
+        <label>Estoque inicial</label>
+        <input id="estoque" type="number" min="0" step="0.001" value="0">
+      `}
 
       <label>Estoque mínimo</label>
-      <input id="estoqueMinimo" type="number" min="0" step="0.01">
+      <input id="estoqueMinimo" type="number" min="0" step="0.001"
+        placeholder="0">
 
       <button id="salvarProduto">Salvar produto</button>
       <button id="cancelar">Cancelar</button>
@@ -347,50 +466,103 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     document.querySelector("#codigo").value = produto?.codigo || "";
     document.querySelector("#nome").value = produto?.nome || "";
-    document.querySelector("#categoria").value = produto?.categoria || "";
-    document.querySelector("#preco").value = produto?.preco_venda ?? "";
-    document.querySelector("#custo").value = produto?.custo ?? "";
-    document.querySelector("#estoque").value = produto?.estoque ?? 0;
+
+    document.querySelector("#categoria").value =
+      categoriaConhecida
+        ? categoriaNormalizada
+        : categoriaExistente;
+
+    document.querySelector("#preco").value =
+      produto?.preco_venda ?? "";
+
+    document.querySelector("#custo").value =
+      produto?.custo ?? "";
+
+    if (!editando) {
+      document.querySelector("#estoque").value = 0;
+    }
+
     document.querySelector("#estoqueMinimo").value =
       produto?.estoque_minimo ?? 0;
 
     document.querySelector("#salvarProduto").onclick =
       () => salvarProduto(produto?.id);
 
-    document.querySelector("#cancelar").onclick = mostrarListaProdutos;
+    document.querySelector("#cancelar").onclick =
+      mostrarListaProdutos;
   }
 
   async function salvarProduto(id) {
-    const nome = document.querySelector("#nome").value.trim();
-    const categoria = document.querySelector("#categoria").value;
-    const preco = Number(document.querySelector("#preco").value);
-    const custo = Number(document.querySelector("#custo").value);
-    const estoque = Number(document.querySelector("#estoque").value);
-    const estoqueMinimo =
-      Number(document.querySelector("#estoqueMinimo").value);
-
-    if (!nome || !categoria) {
-      mensagem("Preencha o nome e a categoria.");
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode salvar produtos.");
       return;
     }
 
-    if ([preco, custo, estoque, estoqueMinimo].some(
-      valor => !Number.isFinite(valor) || valor < 0
-    )) {
-      mensagem("Confira os valores informados.");
+    const codigo = document.querySelector("#codigo").value.trim();
+    const nome = document.querySelector("#nome").value.trim();
+    const categoria = document.querySelector("#categoria").value;
+
+    const precoTexto = document.querySelector("#preco").value;
+    const custoTexto = document.querySelector("#custo").value;
+    const estoqueMinimoTexto =
+      document.querySelector("#estoqueMinimo").value;
+
+    const preco = Number(precoTexto);
+    const custo = Number(custoTexto);
+    const estoqueMinimo = Number(estoqueMinimoTexto);
+
+    if (!nome || !categoria) {
+      mensagem("Preencha o nome e a categoria do produto.");
+      return;
+    }
+
+    if (
+      precoTexto === "" ||
+      custoTexto === "" ||
+      estoqueMinimoTexto === ""
+    ) {
+      mensagem("Preencha o preço, custo e estoque mínimo.");
+      return;
+    }
+
+    if (
+      [preco, custo, estoqueMinimo].some(
+        valor => !Number.isFinite(valor) || valor < 0
+      )
+    ) {
+      mensagem("Confira os valores informados. Não são permitidos valores negativos.");
       return;
     }
 
     const dados = {
-      codigo: document.querySelector("#codigo").value.trim() || null,
+      codigo: codigo || null,
       nome,
       categoria,
       preco_venda: preco,
       custo,
-      estoque,
-      estoque_minimo: estoqueMinimo,
-      ativo: true
+      estoque_minimo: estoqueMinimo
     };
+
+    if (!id) {
+      const estoqueTexto = document.querySelector("#estoque").value;
+      const estoque = Number(estoqueTexto);
+
+      if (
+        estoqueTexto === "" ||
+        !Number.isFinite(estoque) ||
+        estoque < 0
+      ) {
+        mensagem("Informe um estoque inicial válido.");
+        return;
+      }
+
+      dados.estoque = estoque;
+      dados.ativo = true;
+    }
+
+    const botao = document.querySelector("#salvarProduto");
+    botao.disabled = true;
+    botao.textContent = "Salvando...";
 
     let resultado;
 
@@ -406,11 +578,58 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     if (resultado.error) {
+      botao.disabled = false;
+      botao.textContent = "Salvar produto";
+
+      if (resultado.error.code === "23505") {
+        mensagem("Este código já está cadastrado em outro produto. Informe outro código.");
+        return;
+      }
+
       erro("Erro ao salvar produto.", resultado.error);
       return;
     }
 
-    mensagem("Produto salvo com sucesso!");
+    mensagem(
+      id
+        ? "Produto atualizado com sucesso!"
+        : "Produto cadastrado com sucesso!"
+    );
+
+    await carregarProdutosSilencioso();
+    mostrarListaProdutos();
+  }
+
+  async function alternarProduto(produto) {
+    if (!temPermissao("administrador")) {
+      mensagem("Somente o administrador pode alterar produtos.");
+      return;
+    }
+
+    const novaSituacao = !produto.ativo;
+
+    const confirmacao = novaSituacao
+      ? `Deseja reativar o produto "${produto.nome}"?`
+      : `Deseja desativar o produto "${produto.nome}"?`;
+
+    if (!confirm(confirmacao)) return;
+
+    const { error } = await supabase
+      .from("produtos")
+      .update({ ativo: novaSituacao })
+      .eq("id", produto.id);
+
+    if (error) {
+      erro("Não foi possível alterar a situação do produto.", error);
+      return;
+    }
+
+    mensagem(
+      novaSituacao
+        ? "Produto reativado com sucesso!"
+        : "Produto desativado com sucesso!"
+    );
+
     await carregarProdutosSilencioso();
     mostrarListaProdutos();
   }
@@ -522,8 +741,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // =====================================================
   // ABRIR MESA
-  // Administrador, caixa e garçom abrem em nome próprio.
-  // O Supabase identifica o usuário autenticado.
   // =====================================================
 
   async function abrirMesa(mesa) {
@@ -980,6 +1197,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         { event: "*", schema: "public", table: "itens_pedido" },
         atualizarDepoisDeMudanca
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "produtos" },
+        atualizarDepoisDeMudanca
+      )
       .subscribe();
   }
 
@@ -989,6 +1211,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     atualizacaoEmAndamento = true;
 
     try {
+      await carregarProdutosSilencioso();
       await carregarDadosMesas();
 
       if (mesaAtual && pedidoAtual) {
@@ -1011,6 +1234,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         mostrarMesas();
       } else if (document.querySelector("#listaContas")) {
         carregarContasAguardando();
+      } else if (document.querySelector("#listaProdutos")) {
+        renderizarListaProdutos();
       }
     } catch (e) {
       console.error("Erro na atualização em tempo real:", e);
