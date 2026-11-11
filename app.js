@@ -445,7 +445,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
-    // Carregar itens do pedido
     try {
       const { data: itens, error } = await supabase
         .from("itens_pedido")
