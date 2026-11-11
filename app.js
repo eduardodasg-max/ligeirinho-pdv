@@ -340,7 +340,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // =====================================================
-  // PRODUTOS E MESAS (COMANDAS)
+  // PRODUTOS E CONTROLE DE MESAS (COMANDAS)
   // =====================================================
 
   async function carregarProdutosSilencioso() {
