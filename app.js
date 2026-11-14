@@ -1,6 +1,7 @@
-/* =========================================================
+/* ========================================================
    LIGEIRINHO PDV — APP.JS
    Caixa + Mesas + Produtos + Estoque + Pedidos + Pagamentos
+   + Cadastro de garçons pelo administrador
    ========================================================= */
 
 (() => {
@@ -306,6 +307,7 @@
       ${temPermissao("administrador") ? `
         <button id="produtos">Produtos</button>
         <button id="estoque">Estoque</button>
+        <button id="funcionarios">Funcionários</button>
       ` : ""}
       ${temPermissao("administrador", "caixa") ? `
         <button id="caixa">Controle de caixa</button>
@@ -322,6 +324,7 @@
     if (temPermissao("administrador")) {
       document.querySelector("#produtos").onclick = mostrarProdutos;
       document.querySelector("#estoque").onclick = mostrarEstoque;
+      document.querySelector("#funcionarios").onclick = mostrarFuncionarios;
     }
 
     if (temPermissao("administrador", "caixa")) {
@@ -330,6 +333,113 @@
     }
 
     atualizarAvisosEstoque();
+  }
+
+  // FUNCIONÁRIOS — CADASTRO DE GARÇONS PELO ADMINISTRADOR
+
+  async function mostrarFuncionarios() {
+    if (!exigirAdministrador()) return;
+    limpar();
+    painel.innerHTML = `
+      <h2>Cadastro de funcionários</h2>
+      <p>Somente o administrador pode cadastrar funcionários.</p>
+      <div class="item-pedido">
+        <h3>Novo garçom</h3>
+        <label>Nome</label>
+        <input id="funcNome" type="text" autocomplete="name" placeholder="Nome do garçom">
+        <label>E-mail de acesso</label>
+        <input id="funcEmail" type="email" autocomplete="email" placeholder="email@exemplo.com">
+        <label>Senha inicial</label>
+        <input id="funcSenha" type="password" autocomplete="new-password" minlength="8" placeholder="Mínimo de 8 caracteres">
+        <button id="salvarFuncionario">Cadastrar garçom</button>
+        <p id="avisoFuncionario" role="status"></p>
+      </div>
+      <h3>Funcionários cadastrados</h3>
+      <div id="listaFuncionarios">Carregando...</div>
+      <button id="voltarFuncionarios">Voltar</button>
+    `;
+    document.querySelector("#salvarFuncionario").onclick = salvarFuncionario;
+    document.querySelector("#voltarFuncionarios").onclick = mostrarInicio;
+    await carregarFuncionarios();
+  }
+
+  async function carregarFuncionarios() {
+    if (!exigirAdministrador()) return;
+    const lista = document.querySelector("#listaFuncionarios");
+    if (!lista) return;
+
+    lista.textContent = "Carregando funcionários...";
+    try {
+      const { data, error: e } = await supabase
+        .from("perfis_usuarios")
+        .select("id,nome,funcao,ativo,criado_em")
+        .order("nome", { ascending: true });
+      if (e) throw e;
+
+      if (!data?.length) {
+        lista.textContent = "Nenhum funcionário cadastrado.";
+        return;
+      }
+
+      lista.innerHTML = data.map(f => `
+        <div class="item-pedido">
+          <strong>${escapar(f.nome || "Sem nome")}</strong><br>
+          Função: ${escapar(f.funcao)}<br>
+          Situação: ${f.ativo ? "Ativo" : "Inativo"}
+        </div>
+      `).join("");
+    } catch (e) {
+      lista.textContent = "Não foi possível carregar os funcionários: " + (e.message || e);
+    }
+  }
+
+  async function salvarFuncionario() {
+    if (!exigirAdministrador()) return;
+
+    const nome = document.querySelector("#funcNome")?.value.trim();
+    const email = document.querySelector("#funcEmail")?.value.trim().toLowerCase();
+    const senha = document.querySelector("#funcSenha")?.value || "";
+    const aviso = document.querySelector("#avisoFuncionario");
+    const botao = document.querySelector("#salvarFuncionario");
+
+    if (!nome || !email || !senha) {
+      aviso.textContent = "Preencha nome, e-mail e senha.";
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      aviso.textContent = "Informe um e-mail válido.";
+      return;
+    }
+    if (senha.length < 8) {
+      aviso.textContent = "A senha precisa ter pelo menos 8 caracteres.";
+      return;
+    }
+
+    botao.disabled = true;
+    botao.textContent = "Cadastrando...";
+    aviso.textContent = "";
+
+    try {
+      const { data, error: e } = await supabase.functions.invoke(
+        "gerenciar-funcionarios",
+        { body: { acao: "criar", nome, email, senha } }
+      );
+      if (e) throw e;
+      if (!data?.sucesso) throw new Error(data?.erro || "Falha ao cadastrar funcionário.");
+
+      mensagem("Garçom cadastrado com sucesso. Ele já pode entrar com o e-mail e a senha informados.");
+      document.querySelector("#funcNome").value = "";
+      document.querySelector("#funcEmail").value = "";
+      document.querySelector("#funcSenha").value = "";
+      await carregarFuncionarios();
+    } catch (e) {
+      aviso.textContent = "Não foi possível cadastrar: " + (e.message || e);
+    } finally {
+      if (document.querySelector("#salvarFuncionario")) {
+        botao.disabled = false;
+        botao.textContent = "Cadastrar garçom";
+      }
+    }
   }
 
   async function sair() {
