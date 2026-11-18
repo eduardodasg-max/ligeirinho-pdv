@@ -1,22 +1,214 @@
-```javascript
-    document.querySelector("#salvarFuncionario").onclick = cadastrarFuncionario;
-    document.querySelector("#voltarFuncionarios").onclick = mostrarInicio;
+/* ========================================================
+   LIGEIRINHO PDV — APP.JS
+   Caixa + Mesas + Produtos + Estoque + Pedidos + Pagamentos
+   + Cadastro de garçons pelo administrador
+   ========================================================= */
 
-    await carregarFuncionarios();
+(() => {
+  "use strict";
+
+  document.addEventListener("DOMContentLoaded", iniciar);
+
+  const SUPABASE_URL = "https://ewfxcsaxxsqixtmxruxz.supabase.co";
+  const SUPABASE_KEY = "sb_publishable_1Cch1EDl59lNQFUiUIkmBQ_BXHuYjly";
+  const URL_RECUPERACAO = "https://eduardodasg-max.github.io/ligeirinho-pdv/";
+
+  let supabase;
+  let painel;
+  let usuarioAtual = null;
+  let perfilAtual = null;
+  let produtos = [];
+  let mesas = [];
+  let pedidoAtual = null;
+  let canalRealtime = null;
+  let aguardandoRedefinicao = false;
+
+  const dinheiro = valor => Number(valor || 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL"
+  });
+
+  const mensagem = texto => alert(texto);
+
+  function escapar(valor) {
+    return String(valor ?? "").replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    })[c]);
   }
 
-  async function cadastrarFuncionario() {
-    if (!exigirAdministrador()) return;
+  function limpar() {
+    painel.innerHTML = "";
+  }
 
-    const nome = document.querySelector("#funcNome").value.trim();
-    const email = document.querySelector("#funcEmail").value.trim().toLowerCase();
-    const senha = document.querySelector("#funcSenha").value;
-    const aviso = document.querySelector("#avisoFuncionario");
-    const botao = document.querySelector("#salvarFuncionario");
+  function erro(contexto, e) {
+    console.error(contexto, e);
+    mensagem(contexto + (e?.message ? "\n" + e.message : ""));
+  }
 
-    if (!nome || !email || !senha) {
-      aviso.textContent = "Preencha nome, e-mail e senha.";
+  function temPermissao(...funcoes) {
+    return funcoes.includes(perfilAtual?.funcao);
+  }
+
+  function exigirAdministrador() {
+    if (!temPermissao("administrador")) {
+      mensagem("Apenas o administrador pode acessar esta área.");
+      mostrarInicio();
+      return false;
+    }
+    return true;
+  }
+
+  function exigirCaixa() {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Apenas caixa ou administrador pode acessar esta área.");
+      mostrarInicio();
+      return false;
+    }
+    return true;
+  }
+
+  function aplicarEstilos() {
+    if (document.querySelector("#estilosLigeirinho")) return;
+
+    const estilo = document.createElement("style");
+    estilo.id = "estilosLigeirinho";
+    estilo.textContent = `
+      .painel{color:#17324d}
+      .painel h2,.painel h3{color:#123f68}
+      .painel button{cursor:pointer;border:0;border-radius:9px;padding:10px 14px;margin:5px 5px 5px 0;background:#174f82;color:white;font-weight:600}
+      .painel button:hover{filter:brightness(1.1)}
+      .painel button:disabled{opacity:.55;cursor:not-allowed}
+      .painel input,.painel select,.painel textarea{box-sizing:border-box;max-width:100%;padding:10px;margin:5px 0 12px;border:1px solid #b9c9d8;border-radius:7px}
+      .painel label{display:block;font-weight:600;margin-top:7px}
+      #gradeMesas{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:10px;margin-top:15px}
+      #gradeMesas .mesa{min-height:82px;display:flex;flex-direction:column;justify-content:center;align-items:center;border:2px solid transparent;color:white;font-size:15px;font-weight:700}
+      #gradeMesas .mesa-livre{background:#23864b;border-color:#176b39}
+      #gradeMesas .mesa-ocupada{background:#c93636;border-color:#a32323}
+      #gradeMesas .mesa-aguardando{background:#e4ad22;border-color:#bd8610;color:#302300}
+      #gradeMesas .mesa-desconhecida{background:#64748b}
+      .legenda-mesas{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
+      .legenda-mesas span{padding:7px 10px;border-radius:7px;font-weight:700}
+      .legenda-livre{background:#e2f5e8;color:#176b39}
+      .legenda-ocupada{background:#fdeaea;color:#a32323}
+      .legenda-aguardando{background:#fff2cc;color:#765000}
+      .item-pedido{padding:10px;margin:8px 0;border:1px solid #d6e0e8;border-radius:8px;background:#f8fbfd}
+      .painel button#sair{background:#b83232}
+      .relatorio-caixa{background:#fff;color:#17324d;padding:18px;border:1px solid #d6e0e8;border-radius:10px;margin:12px 0}
+      .relatorio-caixa table{width:100%;border-collapse:collapse;margin:10px 0}
+      .relatorio-caixa th,.relatorio-caixa td{padding:8px;border-bottom:1px solid #d6e0e8;text-align:left}
+      .relatorio-caixa .valor-relatorio{font-weight:700}
+      @media print{
+        body *{visibility:hidden!important}
+        #relatorioImpressao,#relatorioImpressao *{visibility:visible!important}
+        #relatorioImpressao{position:absolute;left:0;top:0;width:100%;border:0}
+        .botoes-relatorio{display:none!important}
+      }
+      @media(max-width:600px){#gradeMesas{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    `;
+    document.head.appendChild(estilo);
+  }
+
+  // INICIALIZAÇÃO E LOGIN
+
+  async function iniciar() {
+    painel = document.querySelector(".painel");
+
+    if (!painel) {
+      console.error("Elemento .painel não encontrado.");
       return;
+    }
+
+    aplicarEstilos();
+
+    if (!window.supabase?.createClient) {
+      painel.innerHTML = "<h2>Erro</h2><p>Biblioteca Supabase não carregada. Confira o index.html.</p>";
+      return;
+    }
+
+    try {
+      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+      supabase.auth.onAuthStateChange(evento => {
+        if (evento === "PASSWORD_RECOVERY") {
+          aguardandoRedefinicao = true;
+          mostrarRedefinirSenha();
+        }
+      });
+
+      const { data, error: e } = await supabase.auth.getSession();
+      if (e) throw e;
+
+      if (data.session) {
+        if (!aguardandoRedefinicao) await verificarUsuario();
+      } else {
+        mostrarLogin();
+      }
+    } catch (e) {
+      erro("Não foi possível iniciar o Ligeirinho.", e);
+      mostrarLogin();
+    }
+  }
+
+  function mostrarLogin() {
+    limpar();
+    painel.innerHTML = `
+      <h2>Acesso ao Ligeirinho</h2>
+      <label>E-mail</label>
+      <input id="email" type="email" autocomplete="username" placeholder="Seu e-mail">
+      <label>Senha</label>
+      <input id="senha" type="password" autocomplete="current-password" placeholder="Sua senha">
+      <button id="entrar">Entrar</button>
+      <p><a href="#" id="esqueciSenha">Esqueci minha senha</a></p>
+      <p id="mensagemLogin"></p>
+    `;
+
+    document.querySelector("#entrar").onclick = entrar;
+    document.querySelector("#esqueciSenha").onclick = e => {
+      e.preventDefault();
+      solicitarRecuperacaoSenha();
+    };
+    document.querySelector("#senha").onkeydown = e => {
+      if (e.key === "Enter") entrar();
+    };
+  }
+
+  async function entrar() {
+    const email = document.querySelector("#email").value.trim();
+    const senha = document.querySelector("#senha").value;
+    const botao = document.querySelector("#entrar");
+    const aviso = document.querySelector("#mensagemLogin");
+
+    if (!email || !senha) {
+      aviso.textContent = "Informe e-mail e senha.";
+      return;
+    }
+
+    botao.disabled = true;
+    botao.textContent = "Entrando...";
+
+    try {
+      const { error: e } = await supabase.auth.signInWithPassword({
+        email, password: senha
+      });
+      if (e) throw e;
+      await verificarUsuario();
+    } catch (e) {
+      aviso.textContent = e.message || "Falha no acesso.";
+      botao.disabled = false;
+      botao.textContent = "Entrar";
+    }
+  }
+
+  async function solicitarRecuperacaoSenha() {
+    const campo = document.querySelector("#email");
+    const aviso = document.querySelector("#mensagemLogin");
+    let email = campo.value.trim();
+
+    if (!email) {
+      email = prompt("Informe seu e-mail cadastrado:");
+      if (!email) return;
+      email = email.trim();
+      campo.value = email;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -24,395 +216,1637 @@
       return;
     }
 
+    try {
+      const { error: e } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: URL_RECUPERACAO
+      });
+      if (e) throw e;
+      aviso.textContent = "Se o e-mail estiver cadastrado, você receberá o link de recuperação. Confira o spam.";
+    } catch (e) {
+      aviso.textContent = "Erro ao solicitar recuperação: " + e.message;
+    }
+  }
+
+  function mostrarRedefinirSenha() {
+    limpar();
+    painel.innerHTML = `
+      <h2>Redefinir senha</h2>
+      <label>Nova senha</label>
+      <input id="novaSenha" type="password">
+      <label>Confirmar nova senha</label>
+      <input id="confirmarSenha" type="password">
+      <button id="salvarNovaSenha">Salvar nova senha</button>
+      <p id="mensagemRedefinicao"></p>
+    `;
+    document.querySelector("#salvarNovaSenha").onclick = salvarNovaSenha;
+  }
+
+  async function salvarNovaSenha() {
+    const senha = document.querySelector("#novaSenha").value;
+    const confirmar = document.querySelector("#confirmarSenha").value;
+    const aviso = document.querySelector("#mensagemRedefinicao");
+
+    if (senha.length < 6) {
+      aviso.textContent = "A senha deve ter pelo menos 6 caracteres.";
+      return;
+    }
+    if (senha !== confirmar) {
+      aviso.textContent = "As senhas não são iguais.";
+      return;
+    }
+
+    try {
+      const { error: e } = await supabase.auth.updateUser({ password: senha });
+      if (e) throw e;
+      aguardandoRedefinicao = false;
+      await supabase.auth.signOut();
+      mensagem("Senha alterada. Entre com a nova senha.");
+      mostrarLogin();
+    } catch (e) {
+      aviso.textContent = "Não foi possível alterar a senha: " + e.message;
+    }
+  }
+
+  async function verificarUsuario() {
+    try {
+      const { data, error: e } = await supabase.auth.getUser();
+      if (e || !data.user) {
+        mostrarLogin();
+        return;
+      }
+
+      usuarioAtual = data.user;
+
+      const resultado = await supabase.from("perfis_usuarios")
+        .select("id,nome,funcao,ativo")
+        .eq("id", usuarioAtual.id)
+        .single();
+
+      if (resultado.error) throw resultado.error;
+
+      perfilAtual = resultado.data;
+
+      if (!perfilAtual?.ativo ||
+          !["administrador", "caixa", "garcom"].includes(perfilAtual.funcao)) {
+        throw new Error("Perfil inexistente, inativo ou função inválida.");
+      }
+
+      await carregarProdutos();
+      await carregarMesas();
+      iniciarRealtime();
+      mostrarInicio();
+    } catch (e) {
+      erro("Não foi possível validar seu perfil.", e);
+      await supabase.auth.signOut();
+      usuarioAtual = null;
+      perfilAtual = null;
+      mostrarLogin();
+    }
+  }
+
+  // MENU PRINCIPAL
+
+  function mostrarInicio() {
+    limpar();
+    painel.innerHTML = `
+      <h2>🚤 Ligeirinho PDV</h2>
+      <p>Bem-vindo, ${escapar(perfilAtual.nome)}</p>
+      <p>Perfil: ${escapar(perfilAtual.funcao)}</p>
+      <div id="alertasEstoqueInicio"></div>
+      <button id="mesas">Controle de mesas</button>
+      ${temPermissao("administrador") ? `
+        <button id="produtos">Produtos</button>
+        <button id="estoque">Estoque</button>
+        <button id="funcionarios">Funcionários</button>
+      ` : ""}
+      ${temPermissao("administrador", "caixa") ? `
+        <button id="caixa">Controle de caixa</button>
+        <button id="contas">Contas aguardando pagamento</button>
+      ` : ""}
+      <button id="atualizar">Atualizar</button>
+      <button id="sair">Sair</button>
+    `;
+
+    document.querySelector("#mesas").onclick = mostrarMesas;
+    document.querySelector("#atualizar").onclick = atualizarTudo;
+    document.querySelector("#sair").onclick = sair;
+
+    if (temPermissao("administrador")) {
+      document.querySelector("#produtos").onclick = mostrarProdutos;
+      document.querySelector("#estoque").onclick = mostrarEstoque;
+      document.querySelector("#funcionarios").onclick = mostrarFuncionarios;
+    }
+
+    if (temPermissao("administrador", "caixa")) {
+      document.querySelector("#caixa").onclick = mostrarCaixa;
+      document.querySelector("#contas").onclick = carregarContasAguardando;
+    }
+
+    atualizarAvisosEstoque();
+  }
+
+  // FUNCIONÁRIOS — CADASTRO DE GARÇONS PELO ADMINISTRADOR
+
+  async function mostrarFuncionarios() {
+    if (!exigirAdministrador()) return;
+    limpar();
+    painel.innerHTML = `
+      <h2>Cadastro de funcionários</h2>
+      <p>Somente o administrador pode cadastrar funcionários.</p>
+      <div class="item-pedido">
+        <h3>Novo garçom</h3>
+        <label>Nome</label>
+        <input id="funcNome" type="text" autocomplete="name" placeholder="Nome do garçom">
+        <label>E-mail de acesso</label>
+        <input id="funcEmail" type="email" autocomplete="email" placeholder="email@exemplo.com">
+        <label>Senha inicial</label>
+        <input id="funcSenha" type="password" autocomplete="new-password" minlength="8" placeholder="Mínimo de 8 caracteres">
+        <button id="salvarFuncionario">Cadastrar garçom</button>
+        <p id="avisoFuncionario" role="status"></p>
+      </div>
+      <h3>Funcionários cadastrados</h3>
+      <div id="listaFuncionarios">Carregando...</div>
+      <button id="voltarFuncionarios">Voltar</button>
+    `;
+    document.querySelector("#salvarFuncionario").onclick = salvarFuncionario;
+    document.querySelector("#voltarFuncionarios").onclick = mostrarInicio;
+    await carregarFuncionarios();
+  }
+
+  async function carregarFuncionarios() {
+    if (!exigirAdministrador()) return;
+    const lista = document.querySelector("#listaFuncionarios");
+    if (!lista) return;
+
+    lista.textContent = "Carregando funcionários...";
+    try {
+      const { data, error: e } = await supabase
+        .from("perfis_usuarios")
+        .select("id,nome,funcao,ativo,criado_em")
+        .order("nome", { ascending: true });
+      if (e) throw e;
+
+      if (!data?.length) {
+        lista.textContent = "Nenhum funcionário cadastrado.";
+        return;
+      }
+
+      lista.innerHTML = data.map(f => `
+        <div class="item-pedido">
+          <strong>${escapar(f.nome || "Sem nome")}</strong><br>
+          Função: ${escapar(f.funcao)}<br>
+          Situação: ${f.ativo ? "Ativo" : "Inativo"}
+        </div>
+      `).join("");
+    } catch (e) {
+      lista.textContent = "Não foi possível carregar os funcionários: " + (e.message || e);
+    }
+  }
+
+  async function salvarFuncionario() {
+    if (!exigirAdministrador()) return;
+
+    const nome = document.querySelector("#funcNome")?.value.trim();
+    const email = document.querySelector("#funcEmail")?.value.trim().toLowerCase();
+    const senha = document.querySelector("#funcSenha")?.value || "";
+    const aviso = document.querySelector("#avisoFuncionario");
+    const botao = document.querySelector("#salvarFuncionario");
+
+    if (!nome || !email || !senha) {
+      aviso.textContent = "Preencha nome, e-mail e senha.";
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      aviso.textContent = "Informe um e-mail válido.";
+      return;
+    }
     if (senha.length < 8) {
-      aviso.textContent = "A senha inicial deve ter pelo menos 8 caracteres.";
+      aviso.textContent = "A senha precisa ter pelo menos 8 caracteres.";
       return;
     }
 
     botao.disabled = true;
     botao.textContent = "Cadastrando...";
+    aviso.textContent = "";
 
     try {
-      const { data: sessaoData } = await supabase.auth.getSession();
-      const token = sessaoData.session?.access_token;
-
-      if (!token) throw new Error("Sessão administrativa não encontrada.");
-
-      const resposta = await fetch(
-        `${SUPABASE_URL}/functions/v1/gerenciar-funcionarios`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`,
-            "apikey": SUPABASE_KEY
-          },
-          body: JSON.stringify({
-            acao: "criar",
-            nome,
-            email,
-            senha,
-            funcao: "garcom"
-          })
-        }
+      const { data, error: e } = await supabase.functions.invoke(
+        "gerenciar-funcionarios",
+        { body: { acao: "criar", nome, email, senha } }
       );
+      if (e) throw e;
+      if (!data?.sucesso) throw new Error(data?.erro || "Falha ao cadastrar funcionário.");
 
-      const resultado = await resposta.json();
-
-      if (!resposta.ok || resultado.error) {
-        throw new Error(resultado.error || resultado.message || "Falha ao cadastrar funcionário.");
-      }
-
-      aviso.textContent = "Garçom cadastrado com sucesso.";
+      mensagem("Garçom cadastrado com sucesso. Ele já pode entrar com o e-mail e a senha informados.");
       document.querySelector("#funcNome").value = "";
       document.querySelector("#funcEmail").value = "";
       document.querySelector("#funcSenha").value = "";
-
       await carregarFuncionarios();
     } catch (e) {
-      aviso.textContent = "Erro: " + e.message;
+      aviso.textContent = "Não foi possível cadastrar: " + (e.message || e);
     } finally {
-      botao.disabled = false;
-      botao.textContent = "Cadastrar garçom";
-    }
-  }
-
-  async function carregarFuncionarios() {
-    if (!exigirAdministrador()) return;
-
-    const lista = document.querySelector("#listaFuncionarios");
-    if (!lista) return;
-
-    lista.textContent = "Carregando...";
-
-    try {
-      const { data, error: e } = await supabase.from("perfis_usuarios")
-        .select("id,nome,funcao,ativo,criado_em")
-        .order("nome", { ascending: true });
-
-      if (e) throw e;
-
-      const funcionarios = (data || []).filter(f =>
-        ["garcom", "caixa", "administrador"].includes(f.funcao)
-      );
-
-      if (!funcionarios.length) {
-        lista.textContent = "Nenhum funcionário cadastrado.";
-        return;
+      if (document.querySelector("#salvarFuncionario")) {
+        botao.disabled = false;
+        botao.textContent = "Cadastrar garçom";
       }
-
-      lista.innerHTML = "";
-
-      funcionarios.forEach(funcionario => {
-        const linha = document.createElement("div");
-        linha.className = "item-pedido";
-
-        const descricao = document.createElement("p");
-        descricao.textContent =
-          `${funcionario.nome} — ${funcionario.funcao} — ` +
-          (funcionario.ativo ? "Ativo" : "Inativo");
-
-        linha.appendChild(descricao);
-
-        if (funcionario.funcao === "garcom") {
-          const botao = document.createElement("button");
-          botao.textContent = funcionario.ativo ? "Desativar garçom" : "Reativar garçom";
-          botao.onclick = () => alterarStatusFuncionario(
-            funcionario.id,
-            !funcionario.ativo
-          );
-          linha.appendChild(botao);
-        }
-
-        lista.appendChild(linha);
-      });
-    } catch (e) {
-      lista.textContent = "Não foi possível carregar os funcionários: " + e.message;
-    }
-  }
-
-  async function alterarStatusFuncionario(id, ativo) {
-    if (!exigirAdministrador()) return;
-
-    const acao = ativo ? "reativar" : "desativar";
-
-    if (!confirm(`Deseja ${acao} este garçom?`)) return;
-
-    try {
-      const { data: sessaoData } = await supabase.auth.getSession();
-      const token = sessaoData.session?.access_token;
-
-      if (!token) throw new Error("Sessão administrativa não encontrada.");
-
-      const resposta = await fetch(
-        `${SUPABASE_URL}/functions/v1/gerenciar-funcionarios`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`,
-            "apikey": SUPABASE_KEY
-          },
-          body: JSON.stringify({
-            acao,
-            funcionario_id: id
-          })
-        }
-      );
-
-      const resultado = await resposta.json();
-
-      if (!resposta.ok || resultado.error) {
-        throw new Error(resultado.error || resultado.message || "Falha ao alterar funcionário.");
-      }
-
-      mensagem(ativo ? "Garçom reativado." : "Garçom desativado.");
-      await carregarFuncionarios();
-    } catch (e) {
-      erro("Não foi possível alterar o funcionário.", e);
     }
   }
 
   async function sair() {
-    try {
-      if (canalRealtime) {
-        await supabase.removeChannel(canalRealtime);
-        canalRealtime = null;
-      }
-
-      await supabase.auth.signOut();
-      usuarioAtual = null;
-      perfilAtual = null;
-      pedidoAtual = null;
-      mostrarLogin();
-    } catch (e) {
-      erro("Não foi possível sair.", e);
+    if (canalRealtime) {
+      await supabase.removeChannel(canalRealtime);
+      canalRealtime = null;
     }
+    await supabase.auth.signOut();
+    usuarioAtual = null;
+    perfilAtual = null;
+    pedidoAtual = null;
+    produtos = [];
+    mesas = [];
+    mostrarLogin();
   }
 
   async function atualizarTudo() {
-    try {
-      await carregarProdutos();
-      await carregarMesas();
-      mostrarInicio();
-    } catch (e) {
-      erro("Não foi possível atualizar o sistema.", e);
+    await carregarProdutos();
+    await carregarMesas();
+    mostrarInicio();
+  }
+
+  // ALERTAS DE ESTOQUE
+
+  function calcularAlertasEstoque() {
+    const ativos = produtos.filter(p => p.ativo);
+    const zerados = ativos.filter(p => Number(p.estoque || 0) <= 0);
+    const baixos = ativos.filter(p =>
+      Number(p.estoque || 0) > 0 &&
+      Number(p.estoque || 0) <= Number(p.estoque_minimo || 0)
+    );
+    return { ativos, zerados, baixos };
+  }
+
+  function atualizarAvisosEstoque() {
+    const area = document.querySelector("#alertasEstoqueInicio");
+    if (!area) return;
+
+    const a = calcularAlertasEstoque();
+    if (!a.zerados.length && !a.baixos.length) {
+      area.innerHTML = "<p>✅ Estoque em dia. Nenhum produto baixo ou zerado.</p>";
+      return;
     }
+
+    area.innerHTML = `
+      <div class="item-pedido">
+        <strong>⚠️ Atenção ao estoque</strong>
+        <p>${a.zerados.length} produto(s) zerado(s) e ${a.baixos.length} com estoque baixo.</p>
+        ${a.zerados.map(p => `<p>🔴 ${escapar(p.nome)} — zerado</p>`).join("")}
+        ${a.baixos.map(p => `<p>🟡 ${escapar(p.nome)} — saldo ${p.estoque}</p>`).join("")}
+        ${temPermissao("administrador") ? '<button id="abrirAlertasEstoque">Abrir estoque</button>' : ""}
+      </div>
+    `;
+
+    const botao = document.querySelector("#abrirAlertasEstoque");
+    if (botao) botao.onclick = mostrarEstoque;
   }
 
   // PRODUTOS
 
   async function carregarProdutos() {
     const { data, error: e } = await supabase.from("produtos")
-      .select("*")
-      .eq("ativo", true)
-      .order("nome", { ascending: true });
-
+      .select("*").order("nome");
     if (e) throw e;
     produtos = data || [];
+    atualizarAvisosEstoque();
   }
 
   function mostrarProdutos() {
-    if (!exigirAdministrador()) return;
-
     limpar();
     painel.innerHTML = `
       <h2>Produtos</h2>
-      <div class="item-pedido">
-        <h3>Cadastrar produto</h3>
-        <label>Nome</label>
-        <input id="produtoNome" type="text" placeholder="Nome do produto">
-        <label>Código interno (opcional)</label>
-        <input id="produtoCodigo" type="text" placeholder="Código">
-        <label>Categoria</label>
-        <select id="produtoCategoria">
-          <option value="comida">Comida</option>
-          <option value="bebida">Bebida</option>
-          <option value="petiscos">Petiscos</option>
-          <option value="drinks">Drinks</option>
-          <option value="bebidas sem álcool">Bebidas sem álcool</option>
-        </select>
-        <label>Preço de venda</label>
-        <input id="produtoPreco" type="number" min="0" step="0.01">
-        <label>Custo de compra</label>
-        <input id="produtoCusto" type="number" min="0" step="0.01">
-        <label>Estoque inicial</label>
-        <input id="produtoEstoque" type="number" min="0" step="0.01" value="0">
-        <label>Estoque mínimo</label>
-        <input id="produtoMinimo" type="number" min="0" step="0.01" value="0">
-        <button id="salvarProduto">Salvar produto</button>
-        <p id="avisoProduto"></p>
-      </div>
-      <h3>Produtos cadastrados</h3>
+      <button id="novo">Novo produto</button>
+      <button id="voltar">Voltar</button>
+      <label>Pesquisar</label>
+      <input id="pesquisaProduto" placeholder="Nome ou código">
+      <label>Categoria</label>
+      <select id="filtroCategoria">
+        <option value="">Todas</option>
+        ${[...new Set(produtos.map(p => p.categoria).filter(Boolean))]
+          .map(c => `<option value="${escapar(c)}">${escapar(c)}</option>`).join("")}
+      </select>
+      <label>Situação</label>
+      <select id="filtroStatus">
+        <option value="ativos">Ativos</option>
+        <option value="inativos">Inativos</option>
+        <option value="todos">Todos</option>
+      </select>
+      <div id="resumoProdutos"></div>
       <div id="listaProdutos"></div>
-      <button id="voltarProdutos">Voltar</button>
     `;
 
-    document.querySelector("#salvarProduto").onclick = salvarProduto;
-    document.querySelector("#voltarProdutos").onclick = mostrarInicio;
+    document.querySelector("#novo").onclick = () => formularioProduto();
+    document.querySelector("#voltar").onclick = mostrarInicio;
+    ["pesquisaProduto", "filtroCategoria", "filtroStatus"].forEach(id => {
+      document.querySelector("#" + id).oninput = renderizarProdutos;
+      document.querySelector("#" + id).onchange = renderizarProdutos;
+    });
     renderizarProdutos();
-  }
-
-  async function salvarProduto() {
-    if (!exigirAdministrador()) return;
-
-    const nome = document.querySelector("#produtoNome").value.trim();
-    const codigo = document.querySelector("#produtoCodigo").value.trim();
-    const categoria = document.querySelector("#produtoCategoria").value;
-    const preco = Number(document.querySelector("#produtoPreco").value);
-    const custo = Number(document.querySelector("#produtoCusto").value);
-    const estoque = Number(document.querySelector("#produtoEstoque").value);
-    const minimo = Number(document.querySelector("#produtoMinimo").value);
-    const aviso = document.querySelector("#avisoProduto");
-
-    if (!nome || !Number.isFinite(preco) || preco < 0 ||
-        !Number.isFinite(custo) || custo < 0 ||
-        !Number.isFinite(estoque) || estoque < 0 ||
-        !Number.isFinite(minimo) || minimo < 0) {
-      aviso.textContent = "Preencha os campos com valores válidos.";
-      return;
-    }
-
-    try {
-      const { error: e } = await supabase.from("produtos").insert({
-        nome,
-        codigo: codigo || null,
-        categoria,
-        preco_venda: preco,
-        custo,
-        estoque,
-        estoque_minimo: minimo,
-        ativo: true
-      });
-
-      if (e) throw e;
-
-      mensagem("Produto cadastrado.");
-      await carregarProdutos();
-      mostrarProdutos();
-    } catch (e) {
-      erro("Não foi possível cadastrar o produto.", e);
-    }
   }
 
   function renderizarProdutos() {
     const lista = document.querySelector("#listaProdutos");
     if (!lista) return;
 
-    lista.innerHTML = "";
+    const busca = document.querySelector("#pesquisaProduto").value.toLowerCase();
+    const categoria = document.querySelector("#filtroCategoria").value;
+    const status = document.querySelector("#filtroStatus").value;
 
-    if (!produtos.length) {
-      lista.textContent = "Nenhum produto ativo cadastrado.";
+    let filtrados = produtos.filter(p => {
+      if (status === "ativos" && !p.ativo) return false;
+      if (status === "inativos" && p.ativo) return false;
+      if (categoria && p.categoria !== categoria) return false;
+      return String(p.nome || "").toLowerCase().includes(busca) ||
+        String(p.codigo || "").toLowerCase().includes(busca);
+    });
+
+    document.querySelector("#resumoProdutos").textContent =
+      `Total: ${produtos.length} | Encontrados: ${filtrados.length}`;
+
+    lista.innerHTML = "";
+    if (!filtrados.length) {
+      lista.textContent = "Nenhum produto encontrado.";
       return;
     }
 
-    produtos.forEach(produto => {
-      const item = document.createElement("div");
-      item.className = "item-pedido";
-
+    filtrados.forEach(p => {
+      const linha = document.createElement("div");
+      linha.className = "item-pedido";
       const texto = document.createElement("p");
       texto.textContent =
-        `${produto.nome} — ${produto.categoria} — ` +
-        `${dinheiro(produto.preco_venda)} — Estoque: ${produto.estoque}`;
-
+        `${p.nome} — ${dinheiro(p.preco_venda)} — Custo: ${dinheiro(p.custo)} — Estoque: ${p.estoque} — Mínimo: ${p.estoque_minimo} — ${p.categoria} — ${p.ativo ? "ATIVO" : "INATIVO"}`;
       const editar = document.createElement("button");
       editar.textContent = "Editar";
-      editar.onclick = () => editarProduto(produto);
-
-      const desativar = document.createElement("button");
-      desativar.textContent = "Desativar";
-      desativar.onclick = () => desativarProduto(produto.id);
-
-      item.append(texto, editar, desativar);
-      lista.appendChild(item);
+      editar.onclick = () => formularioProduto(p);
+      const statusBotao = document.createElement("button");
+      statusBotao.textContent = p.ativo ? "Desativar" : "Reativar";
+      statusBotao.onclick = () => alterarStatusProduto(p);
+      linha.append(texto, editar, statusBotao);
+      lista.appendChild(linha);
     });
   }
 
-  function editarProduto(produto) {
+  async function verificarCodigoDuplicado(codigo, atual) {
+    if (!codigo) return false;
+    let consulta = supabase.from("produtos").select("id").ilike("codigo", codigo);
+    if (atual?.id) consulta = consulta.neq("id", atual.id);
+    const { data, error: e } = await consulta.limit(1);
+    if (e) throw e;
+    return (data || []).length > 0;
+  }
+
+  async function alterarStatusProduto(p) {
+    if (!exigirAdministrador()) return;
+    if (!confirm(`Deseja ${p.ativo ? "desativar" : "reativar"} ${p.nome}?`)) return;
+    try {
+      const { error: e } = await supabase.from("produtos")
+        .update({ ativo: !p.ativo }).eq("id", p.id);
+      if (e) throw e;
+      await carregarProdutos();
+      mostrarProdutos();
+    } catch (e) {
+      erro("Não foi possível alterar o produto.", e);
+    }
+  }
+
+  function formularioProduto(p = null) {
+    if (!exigirAdministrador()) return;
+    limpar();
+
+    const categorias = [
+      { valor: "comida", rotulo: "Comida" },
+      { valor: "bebida", rotulo: "Bebida" },
+      { valor: "petiscos", rotulo: "Petiscos" },
+      { valor: "drinks", rotulo: "Drinks" },
+      { valor: "bebidas sem álcool", rotulo: "Bebidas sem álcool" }
+    ];
+
+    painel.innerHTML = `
+      <h2>${p ? "Editar produto" : "Novo produto"}</h2>
+      <label>Código</label><input id="codigo" autocomplete="off">
+      <label>Nome</label><input id="nome" autocomplete="off">
+      <label>Categoria</label>
+      <select id="categoria">
+        <option value="">Selecione</option>
+        ${categorias.map(c => `<option value="${escapar(c.valor)}">${escapar(c.rotulo)}</option>`).join("")}
+      </select>
+      <label>Preço de venda</label><input id="preco" type="number" min="0" step="0.01">
+      <label>Custo</label><input id="custo" type="number" min="0" step="0.01">
+      <label>${p ? "Estoque atual (use movimentações para alterar)" : "Estoque inicial"}</label>
+      <input id="estoque" type="number" min="0" step="0.001" ${p ? "readonly" : ""}>
+      <label>Estoque mínimo</label><input id="minimo" type="number" min="0" step="0.001">
+      <button id="salvar">Salvar produto</button>
+      <button id="cancelar">Voltar</button>
+      <p id="avisoProduto"></p>
+    `;
+
+    if (p) {
+      document.querySelector("#codigo").value = p.codigo || "";
+      document.querySelector("#nome").value = p.nome || "";
+      document.querySelector("#categoria").value = p.categoria || "";
+      document.querySelector("#preco").value = p.preco_venda ?? 0;
+      document.querySelector("#custo").value = p.custo ?? 0;
+      document.querySelector("#estoque").value = p.estoque ?? 0;
+      document.querySelector("#minimo").value = p.estoque_minimo ?? 0;
+    }
+
+    document.querySelector("#salvar").onclick = () => salvarProduto(p);
+    document.querySelector("#cancelar").onclick = mostrarProdutos;
+  }
+
+  async function salvarProduto(p) {
+    if (!exigirAdministrador()) return;
+
+    const campo = id => document.querySelector(id);
+    const aviso = campo("#avisoProduto");
+    const botao = campo("#salvar");
+    if (!aviso || !botao) return;
+
+    const precoTexto = campo("#preco").value.trim();
+    const custoTexto = campo("#custo").value.trim();
+    const minimoTexto = campo("#minimo").value.trim();
+    const estoqueTexto = campo("#estoque").value.trim();
+
+    const registro = {
+      codigo: campo("#codigo").value.trim() || null,
+      nome: campo("#nome").value.trim(),
+      categoria: campo("#categoria").value,
+      preco_venda: precoTexto === "" ? NaN : Number(precoTexto),
+      custo: custoTexto === "" ? 0 : Number(custoTexto),
+      estoque_minimo: minimoTexto === "" ? 0 : Number(minimoTexto)
+    };
+
+    const inicial = estoqueTexto === "" ? 0 : Number(estoqueTexto);
+
+    if (!registro.nome) {
+      aviso.textContent = "Informe o nome do produto.";
+      return;
+    }
+
+    if (!["comida", "bebida", "petiscos", "drinks", "bebidas sem álcool"].includes(registro.categoria)) {
+      aviso.textContent = "Selecione uma categoria válida.";
+      return;
+    }
+
+    if (!Number.isFinite(registro.preco_venda) || registro.preco_venda < 0 ||
+        !Number.isFinite(registro.custo) || registro.custo < 0 ||
+        !Number.isFinite(registro.estoque_minimo) || registro.estoque_minimo < 0 ||
+        (!p && (!Number.isFinite(inicial) || inicial < 0))) {
+      aviso.textContent = "Informe valores numéricos válidos. O preço de venda é obrigatório.";
+      return;
+    }
+
+    botao.disabled = true;
+    botao.textContent = "Salvando...";
+    aviso.textContent = "";
+
+    try {
+      if (registro.codigo && await verificarCodigoDuplicado(registro.codigo, p)) {
+        aviso.textContent = "Já existe produto com esse código.";
+        return;
+      }
+
+      let resultado;
+
+      if (p) {
+        resultado = await supabase.from("produtos")
+          .update(registro)
+          .eq("id", p.id)
+          .select("id")
+          .maybeSingle();
+      } else {
+        resultado = await supabase.from("produtos")
+          .insert({ ...registro, estoque: inicial, ativo: true })
+          .select("id")
+          .single();
+      }
+
+      if (resultado.error) throw resultado.error;
+
+      if (!resultado.data) {
+        throw new Error("O Supabase não confirmou a gravação. Verifique as permissões RLS da tabela produtos.");
+      }
+
+      await carregarProdutos();
+      mostrarProdutos();
+      mensagem(p ? "Produto atualizado com sucesso." : "Produto cadastrado com sucesso.");
+    } catch (e) {
+      console.error("Erro detalhado ao salvar produto:", e);
+      const detalhes = [e?.message, e?.details, e?.hint, e?.code]
+        .filter(Boolean).join(" | ");
+      aviso.textContent = "Não foi possível salvar o produto: " + (detalhes || String(e));
+    } finally {
+      if (campo("#salvar")) {
+        botao.disabled = false;
+        botao.textContent = "Salvar produto";
+      }
+    }
+  }
+
+  // ESTOQUE E MOVIMENTAÇÕES
+
+  function mostrarEstoque() {
+    if (!exigirAdministrador()) return;
+
+    const ativos = produtos.filter(p => p.ativo);
+    const zerados = ativos.filter(p => Number(p.estoque) <= 0);
+    const baixos = ativos.filter(p =>
+      Number(p.estoque) > 0 && Number(p.estoque) <= Number(p.estoque_minimo || 0)
+    );
+
+    limpar();
+    painel.innerHTML = `
+      <h2>Estoque</h2>
+      <p>Produtos ativos: ${ativos.length}</p>
+      <p>Estoque zerado: ${zerados.length}</p>
+      <p>Estoque baixo: ${baixos.length}</p>
+      <button id="movimentar">Registrar movimentação</button>
+      <button id="historico">Histórico</button>
+      <button id="voltar">Voltar</button>
+      <h3>Produtos com estoque baixo ou zerado</h3>
+      <div id="listaEstoque"></div>
+    `;
+
+    document.querySelector("#movimentar").onclick = formularioMovimentacaoEstoque;
+    document.querySelector("#historico").onclick = historicoEstoque;
+    document.querySelector("#voltar").onclick = mostrarInicio;
+
+    const lista = document.querySelector("#listaEstoque");
+    [...zerados, ...baixos].forEach(p => {
+      const item = document.createElement("p");
+      item.textContent = `${p.nome} — saldo: ${p.estoque} — mínimo: ${p.estoque_minimo}`;
+      lista.appendChild(item);
+    });
+
+    if (!zerados.length && !baixos.length) lista.textContent = "Estoque em dia.";
+  }
+
+  function formularioMovimentacaoEstoque() {
+    if (!exigirAdministrador()) return;
+
+    const ativos = produtos.filter(p => p.ativo);
+    if (!ativos.length) {
+      mensagem("Não há produtos ativos.");
+      return;
+    }
+
+    limpar();
+    painel.innerHTML = `
+      <h2>Movimentação de estoque</h2>
+      <label>Produto</label>
+      <select id="movProduto">
+        <option value="">Selecione</option>
+        ${ativos.map(p => `<option value="${p.id}">${escapar(p.nome)} — saldo ${p.estoque}</option>`).join("")}
+      </select>
+      <label>Tipo</label>
+      <select id="movTipo">
+        <option value="entrada">Entrada</option>
+        <option value="saida">Saída</option>
+        <option value="ajuste">Ajuste de saldo</option>
+      </select>
+      <label id="rotuloQuantidade">Quantidade</label>
+      <input id="movQuantidade" type="number" min="0.001" step="0.001">
+      <label>Motivo</label>
+      <textarea id="movMotivo" rows="3"></textarea>
+      <button id="salvarMovimento">Registrar</button>
+      <button id="voltar">Voltar</button>
+      <p id="avisoMovimento"></p>
+    `;
+
+    const tipo = document.querySelector("#movTipo");
+    tipo.onchange = () => {
+      document.querySelector("#rotuloQuantidade").textContent =
+        tipo.value === "ajuste" ? "Novo saldo contado" : "Quantidade";
+      document.querySelector("#movQuantidade").min =
+        tipo.value === "ajuste" ? "0" : "0.001";
+    };
+
+    document.querySelector("#salvarMovimento").onclick = registrarMovimentacaoEstoque;
+    document.querySelector("#voltar").onclick = mostrarEstoque;
+  }
+
+  async function registrarMovimentacaoEstoque() {
+    if (!exigirAdministrador()) return;
+
+    const produtoId = document.querySelector("#movProduto").value;
+    const tipo = document.querySelector("#movTipo").value;
+    const quantidade = Number(document.querySelector("#movQuantidade").value);
+    const motivo = document.querySelector("#movMotivo").value.trim();
+    const aviso = document.querySelector("#avisoMovimento");
+
+    if (!produtoId || !Number.isFinite(quantidade) || quantidade < 0 ||
+        (tipo !== "ajuste" && quantidade <= 0) || !motivo) {
+      aviso.textContent = "Informe produto, quantidade válida e motivo.";
+      return;
+    }
+
+    try {
+      const { error: e } = await supabase.rpc("registrar_movimentacao_estoque", {
+        p_produto_id: produtoId,
+        p_tipo: tipo,
+        p_quantidade: quantidade,
+        p_motivo: motivo
+      });
+
+      if (e) throw e;
+
+      await carregarProdutos();
+      mensagem("Movimentação registrada.");
+      mostrarEstoque();
+    } catch (e) {
+      erro("Não foi possível movimentar o estoque.", e);
+    }
+  }
+
+  async function historicoEstoque() {
     if (!exigirAdministrador()) return;
 
     limpar();
     painel.innerHTML = `
-      <h2>Editar produto</h2>
-      <label>Nome</label>
-      <input id="editarNome" type="text" value="${escapar(produto.nome)}">
-      <label>Código interno</label>
-      <input id="editarCodigo" type="text" value="${escapar(produto.codigo || "")}">
-      <label>Categoria</label>
-      <select id="editarCategoria">
-        <option value="comida">Comida</option>
-        <option value="bebida">Bebida</option>
-        <option value="petiscos">Petiscos</option>
-        <option value="drinks">Drinks</option>
-        <option value="bebidas sem álcool">Bebidas sem álcool</option>
-      </select>
-      <label>Preço de venda</label>
-      <input id="editarPreco" type="number" min="0" step="0.01" value="${Number(produto.preco_venda || 0)}">
-      <label>Custo</label>
-      <input id="editarCusto" type="number" min="0" step="0.01" value="${Number(produto.custo || 0)}">
-      <button id="atualizarProduto">Salvar alterações</button>
-      <button id="cancelarEdicao">Cancelar</button>
-      <p id="avisoEdicao"></p>
+      <h2>Histórico de estoque</h2>
+      <button id="voltar">Voltar ao estoque</button>
+      <div id="listaHistorico">Carregando...</div>
     `;
 
-    document.querySelector("#editarCategoria").value = produto.categoria;
-    document.querySelector("#atualizarProduto").onclick = () => atualizarProduto(produto.id);
-    document.querySelector("#cancelarEdicao").onclick = mostrarProdutos;
+    document.querySelector("#voltar").onclick = mostrarEstoque;
+
+    try {
+      const { data, error: e } = await supabase.from("movimentacoes_estoque")
+        .select("id,produto_id,operador_id,pedido_id,tipo,quantidade,motivo,criado_em")
+        .is("pedido_id", null)
+        .order("criado_em", { ascending: false });
+
+      if (e) throw e;
+
+      const movimentos = data || [];
+      const produtoIds = [...new Set(movimentos.map(m => m.produto_id).filter(Boolean))];
+      const operadorIds = [...new Set(movimentos.map(m => m.operador_id).filter(Boolean))];
+
+      const nomesProdutos = {};
+      const nomesOperadores = {};
+
+      if (produtoIds.length) {
+        const r = await supabase.from("produtos").select("id,nome").in("id", produtoIds);
+        if (r.error) throw r.error;
+        (r.data || []).forEach(p => nomesProdutos[p.id] = p.nome);
+      }
+
+      if (operadorIds.length) {
+        const r = await supabase.from("perfis_usuarios").select("id,nome").in("id", operadorIds);
+        if (r.error) throw r.error;
+        (r.data || []).forEach(p => nomesOperadores[p.id] = p.nome);
+      }
+
+      const lista = document.querySelector("#listaHistorico");
+      lista.innerHTML = "";
+
+      if (!movimentos.length) {
+        lista.textContent = "Nenhuma movimentação registrada.";
+        return;
+      }
+
+      movimentos.forEach(m => {
+        const item = document.createElement("div");
+        item.className = "item-pedido";
+        item.textContent =
+          `${new Date(m.criado_em).toLocaleString("pt-BR")} — ${m.tipo} — ${nomesProdutos[m.produto_id] || "Produto"} — quantidade: ${m.quantidade} — ${m.motivo || ""} — Operador: ${nomesOperadores[m.operador_id] || "Não identificado"}`;
+        lista.appendChild(item);
+      });
+    } catch (e) {
+      erro("Não foi possível carregar o histórico.", e);
+    }
   }
 
-  async function atualizarProduto(id) {
-    if (!exigirAdministrador()) return;
+  // CAIXA
 
-    const nome = document.querySelector("#editarNome").value.trim();
-    const codigo = document.querySelector("#editarCodigo").value.trim();
-    const categoria = document.querySelector("#editarCategoria").value;
-    const preco = Number(document.querySelector("#editarPreco").value);
-    const custo = Number(document.querySelector("#editarCusto").value);
-    const aviso = document.querySelector("#avisoEdicao");
+  async function buscarCaixaAberto() {
+    const { data, error: e } = await supabase.from("caixas")
+      .select("*")
+      .eq("status", "aberto")
+      .order("aberto_em", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    if (!nome || !Number.isFinite(preco) || preco < 0 ||
-        !Number.isFinite(custo) || custo < 0) {
-      aviso.textContent = "Informe nome, preço e custo válidos.";
+    if (e) throw e;
+    return data;
+  }
+
+  async function mostrarCaixa() {
+    if (!exigirCaixa()) return;
+
+    limpar();
+    painel.innerHTML = `
+      <h2>Controle de caixa</h2>
+      <div id="resumoCaixa">Consultando...</div>
+      <div id="acoesCaixa"></div>
+      <button id="historicoCaixa">Histórico de caixas</button>
+      <button id="voltar">Voltar</button>
+    `;
+
+    document.querySelector("#voltar").onclick = mostrarInicio;
+    document.querySelector("#historicoCaixa").onclick = historicoCaixa;
+
+    try {
+      const caixa = await buscarCaixaAberto();
+      const resumo = document.querySelector("#resumoCaixa");
+      const acoes = document.querySelector("#acoesCaixa");
+
+      if (!caixa) {
+        resumo.innerHTML = "<p><strong>Nenhum caixa aberto.</strong></p>";
+        acoes.innerHTML = `
+          <label>Valor inicial do caixa (R$)</label>
+          <input id="valorInicial" type="number" min="0" step="0.01" value="0">
+          <button id="abrirCaixa">Abrir caixa</button>
+        `;
+        document.querySelector("#abrirCaixa").onclick = abrirCaixa;
+        return;
+      }
+
+      const inicial = Number(caixa.valor_inicial || 0);
+      const esperado = Number(caixa.valor_esperado ?? inicial);
+
+      resumo.innerHTML = `
+        <div class="item-pedido">
+          <strong>CAIXA ABERTO</strong>
+          <p>Operador: ${escapar(perfilAtual.nome)}</p>
+          <p>Abertura: ${caixa.aberto_em ? new Date(caixa.aberto_em).toLocaleString("pt-BR") : "—"}</p>
+          <p>Valor inicial: <strong>${dinheiro(inicial)}</strong></p>
+          <p>Saldo esperado: <strong>${dinheiro(esperado)}</strong></p>
+        </div>
+      `;
+
+      acoes.innerHTML = `
+        <h3>Movimentação de caixa</h3>
+        <label>Tipo</label>
+        <select id="tipoMovCaixa">
+          <option value="suprimento">Suprimento</option>
+          <option value="sangria">Sangria</option>
+        </select>
+        <label>Valor (R$)</label>
+        <input id="valorMovCaixa" type="number" min="0.01" step="0.01">
+        <label>Descrição / motivo</label>
+        <input id="descricaoMovCaixa" maxlength="250" placeholder="Informe o motivo">
+        <button id="registrarMovCaixa">Registrar movimentação</button>
+        <hr>
+        <h3>Fechamento</h3>
+        <label>Valor contado no caixa (R$)</label>
+        <input id="valorContado" type="number" min="0" step="0.01">
+        <label>Justificativa da diferença</label>
+        <textarea id="justificativaFechamento" rows="3"></textarea>
+        <button id="fecharCaixa">Fechar caixa</button>
+        <button id="relatorioCaixaAtual">Relatório deste caixa</button>
+      `;
+
+      document.querySelector("#registrarMovCaixa").onclick = registrarMovimentacaoCaixa;
+      document.querySelector("#fecharCaixa").onclick = fecharCaixa;
+      document.querySelector("#relatorioCaixaAtual").onclick = () => relatorioCaixa(caixa.id);
+    } catch (e) {
+      erro("Não foi possível consultar o caixa.", e);
+    }
+  }
+
+  async function abrirCaixa() {
+    if (!exigirCaixa()) return;
+
+    const valor = Number(document.querySelector("#valorInicial").value);
+
+    if (!Number.isFinite(valor) || valor < 0) {
+      mensagem("Informe um valor inicial válido.");
       return;
     }
 
     try {
-      const { error: e } = await supabase.from("produtos")
-        .update({
-          nome,
-          codigo: codigo || null,
-          categoria,
-          preco_venda: preco,
-          custo
-        })
-        .eq("id", id);
+      const { error: e } = await supabase.rpc("abrir_caixa", {
+        p_valor_inicial: valor
+      });
 
       if (e) throw e;
 
-      mensagem("Produto atualizado.");
-      await carregarProdutos();
-      mostrarProdutos();
+      mensagem("Caixa aberto com sucesso.");
+      await mostrarCaixa();
     } catch (e) {
-      erro("Não foi possível atualizar o produto.", e);
+      erro("Não foi possível abrir o caixa.", e);
     }
   }
 
-  async function desativarProduto(id) {
-    if (!exigirAdministrador()) return;
-    if (!confirm("Deseja desativar este produto?")) return;
+  async function registrarMovimentacaoCaixa() {
+    if (!exigirCaixa()) return;
+
+    const tipo = document.querySelector("#tipoMovCaixa").value;
+    const valor = Number(document.querySelector("#valorMovCaixa").value);
+    const descricao = document.querySelector("#descricaoMovCaixa").value.trim();
+
+    if (!Number.isFinite(valor) || valor <= 0 || !descricao) {
+      mensagem("Informe valor maior que zero e descrição.");
+      return;
+    }
 
     try {
-      const { error: e } = await supabase.from("produtos")
-        .update({ ativo: false })
-        .eq("id", id);
+      const { error: e } = await supabase.rpc("registrar_movimentacao_caixa", {
+        p_tipo: tipo,
+        p_valor: valor,
+        p_descricao: descricao
+      });
 
       if (e) throw e;
 
-      await carregarProdutos();
-      mostrarProdutos();
+      mensagem(tipo === "sangria" ? "Sangria registrada." : "Suprimento registrado.");
+      await mostrarCaixa();
     } catch (e) {
-      erro("Não foi possível desativar o produto.", e);
+      erro("Não foi possível registrar a movimentação.", e);
     }
   }
 
-  // ESTOQUE
+  async function fecharCaixa() {
+    if (!exigirCaixa()) return;
+
+    const contado = Number(document.querySelector("#valorContado").value);
+    const justificativa = document.querySelector("#justificativaFechamento").value.trim();
+
+    if (!Number.isFinite(contado) || contado < 0) {
+      mensagem("Informe o valor contado.");
+      return;
+    }
+
+    try {
+      const caixa = await buscarCaixaAberto();
+      if (!caixa) throw new Error("Não existe caixa aberto.");
+
+      const esperado = Number(caixa.valor_esperado ?? caixa.valor_inicial ?? 0);
+      const diferenca = Number((contado - esperado).toFixed(2));
+
+      if (Math.abs(diferenca) >= 0.01 && !justificativa) {
+        mensagem("A justificativa é obrigatória quando existe diferença.");
+        return;
+      }
+
+      if (!confirm(
+        `Confirma o fechamento?\nEsperado: ${dinheiro(esperado)}\nContado: ${dinheiro(contado)}\nDiferença: ${dinheiro(diferenca)}`
+      )) return;
+
+      const { data, error: e } = await supabase.rpc("fechar_caixa", {
+        p_valor_contado: contado,
+        p_justificativa: justificativa || null,
+        p_caixa_id: caixa.id
+      });
+
+      if (e) throw e;
+
+      mensagem("Caixa fechado com sucesso.");
+      await mostrarCaixa();
+    } catch (e) {
+      erro("Não foi possível fechar o caixa.", e);
+    }
+  }
+
+  async function historicoCaixa() {
+    if (!exigirCaixa()) return;
+
+    limpar();
+    painel.innerHTML = `
+      <h2>Histórico de caixas</h2>
+      <button id="atualizar">Atualizar histórico</button>
+      <button id="voltar">Voltar ao caixa</button>
+      <div id="listaCaixas">Carregando...</div>
+    `;
+
+    document.querySelector("#atualizar").onclick = historicoCaixa;
+    document.querySelector("#voltar").onclick = mostrarCaixa;
+
+    try {
+      const { data, error: e } = await supabase.from("caixas")
+        .select("*")
+        .order("aberto_em", { ascending: false })
+        .limit(100);
+
+      if (e) throw e;
+
+      const caixas = data || [];
+      const ids = [...new Set(caixas.map(c => c.operador_id).filter(Boolean))];
+      const nomes = {};
+
+      if (ids.length) {
+        const r = await supabase.from("perfis_usuarios")
+          .select("id,nome").in("id", ids);
+        if (r.error) throw r.error;
+        (r.data || []).forEach(p => nomes[p.id] = p.nome);
+      }
+
+      const lista = document.querySelector("#listaCaixas");
+      lista.innerHTML = "";
+
+      if (!caixas.length) {
+        lista.textContent = "Nenhum caixa registrado.";
+        return;
+      }
+
+      caixas.forEach(c => {
+        const item = document.createElement("div");
+        item.className = "item-pedido";
+        item.innerHTML = `
+          <strong>${escapar(String(c.status || "").toUpperCase())}</strong>
+          <p>Operador: ${escapar(nomes[c.operador_id] || "Não identificado")}</p>
+          <p>Abertura: ${c.aberto_em ? new Date(c.aberto_em).toLocaleString("pt-BR") : "—"}</p>
+          <p>Fechamento: ${c.fechado_em ? new Date(c.fechado_em).toLocaleString("pt-BR") : "Em aberto"}</p>
+          <p>Inicial: ${dinheiro(c.valor_inicial)}</p>
+          <p>Esperado: ${dinheiro(c.valor_esperado)}</p>
+          <p>Contado: ${c.valor_contado == null ? "—" : dinheiro(c.valor_contado)}</p>
+          <p>Diferença: ${c.diferenca == null ? "—" : dinheiro(c.diferenca)}</p>
+          <p>Justificativa: ${escapar(c.justificativa || "—")}</p>
+        `;
+        const botaoRelatorio = document.createElement("button");
+        botaoRelatorio.textContent = "Ver relatório completo";
+        botaoRelatorio.onclick = () => relatorioCaixa(c.id, true);
+        item.appendChild(botaoRelatorio);
+        lista.appendChild(item);
+      });
+    } catch (e) {
+      erro("Não foi possível carregar o histórico de caixas.", e);
+    }
+  }
+
+  // RELATÓRIO DE CAIXA — CONSULTA, RESUMO E IMPRESSÃO
+
+  async function relatorioCaixa(caixaId, voltarParaHistorico = false) {
+    if (!exigirCaixa()) return;
+    if (!caixaId) {
+      mensagem("Não foi possível identificar o caixa.");
+      return;
+    }
+
+    limpar();
+    painel.innerHTML = `
+      <h2>Relatório de caixa</h2>
+      <p id="statusRelatorio">Carregando informações...</p>
+      <div id="relatorioImpressao"></div>
+      <div class="botoes-relatorio">
+        <button id="imprimirRelatorio" disabled>Imprimir relatório</button>
+        <button id="voltarRelatorio">Voltar</button>
+      </div>
+    `;
+    document.querySelector("#voltarRelatorio").onclick = () => {
+      if (voltarParaHistorico) historicoCaixa();
+      else mostrarCaixa();
+    };
+
+    try {
+      const { data: caixa, error: erroCaixa } = await supabase
+        .from("caixas")
+        .select("*")
+        .eq("id", caixaId)
+        .single();
+
+      if (erroCaixa) throw erroCaixa;
+      if (!caixa) throw new Error("Caixa não encontrado.");
+
+      const inicio = caixa.aberto_em || new Date(0).toISOString();
+      const fim = caixa.fechado_em || new Date().toISOString();
+
+      // CORREÇÃO:
+      // pagamentos.criado_em não existe na tabela pagamentos.
+      // Primeiro buscamos os pedidos fechados durante o período do caixa.
+      // Depois buscamos os pagamentos relacionados a esses pedidos.
+      const [resultadoPedidos, resultadoMovimentos] = await Promise.all([
+        supabase.from("pedidos")
+          .select("id,fechado_em")
+          .not("fechado_em", "is", null)
+          .gte("fechado_em", inicio)
+          .lte("fechado_em", fim)
+          .order("fechado_em", { ascending: true }),
+
+        supabase.from("movimentacoes_caixa")
+          .select("*")
+          .eq("caixa_id", caixaId)
+          .order("criado_em", { ascending: true })
+      ]);
+
+      if (resultadoPedidos.error) throw resultadoPedidos.error;
+      if (resultadoMovimentos.error) throw resultadoMovimentos.error;
+
+      const pedidosFechados = resultadoPedidos.data || [];
+      const idsPedidos = pedidosFechados.map(p => p.id);
+      const dataFechamentoPorPedido = {};
+
+      pedidosFechados.forEach(p => {
+        dataFechamentoPorPedido[p.id] = p.fechado_em;
+      });
+
+      let pagamentos = [];
+
+      if (idsPedidos.length) {
+        const resultadoPagamentos = await supabase.from("pagamentos")
+          .select("*")
+          .in("pedido_id", idsPedidos);
+
+        if (resultadoPagamentos.error) throw resultadoPagamentos.error;
+        pagamentos = resultadoPagamentos.data || [];
+      }
+
+      const movimentos = resultadoMovimentos.data || [];
+
+      const totalPorForma = {};
+      pagamentos.forEach(p => {
+        const forma = String(p.forma_pagamento || "não informado");
+        totalPorForma[forma] = (totalPorForma[forma] || 0) + Number(p.valor || 0);
+      });
+
+      const totalPagamentos = pagamentos.reduce(
+        (soma, p) => soma + Number(p.valor || 0), 0
+      );
+
+      const totalSuprimentos = movimentos
+        .filter(m => String(m.tipo).toLowerCase() === "suprimento")
+        .reduce((soma, m) => soma + Number(m.valor || 0), 0);
+
+      const totalSangrias = movimentos
+        .filter(m => String(m.tipo).toLowerCase() === "sangria")
+        .reduce((soma, m) => soma + Number(m.valor || 0), 0);
+
+      const valorInicial = Number(caixa.valor_inicial || 0);
+      const saldoEsperado = Number(
+        caixa.valor_esperado ?? (valorInicial + totalPagamentos + totalSuprimentos - totalSangrias)
+      );
+      const valorContado = caixa.valor_contado == null ? null : Number(caixa.valor_contado);
+      const diferenca = caixa.diferenca == null
+        ? (valorContado == null ? null : Number((valorContado - saldoEsperado).toFixed(2)))
+        : Number(caixa.diferenca);
+
+      let nomeOperador = "Não identificado";
+      if (caixa.operador_id) {
+        const resultadoOperador = await supabase.from("perfis_usuarios")
+          .select("nome")
+          .eq("id", caixa.operador_id)
+          .maybeSingle();
+        if (!resultadoOperador.error) {
+          nomeOperador = resultadoOperador.data?.nome || nomeOperador;
+        }
+      }
+
+      const formasHtml = Object.entries(totalPorForma).length
+        ? Object.entries(totalPorForma).map(([forma, valor]) =>
+            `<tr><td>${escapar(forma.toUpperCase())}</td><td class="valor-relatorio">${dinheiro(valor)}</td></tr>`
+          ).join("")
+        : '<tr><td colspan="2">Nenhum pagamento encontrado neste período.</td></tr>';
+
+      const pagamentosHtml = pagamentos.length
+        ? pagamentos.map(p => `
+            <tr>
+              <td>${dataFechamentoPorPedido[p.pedido_id]
+                ? new Date(dataFechamentoPorPedido[p.pedido_id]).toLocaleString("pt-BR")
+                : "—"}</td>
+              <td>${escapar(String(p.forma_pagamento || "—").toUpperCase())}</td>
+              <td>${dinheiro(p.valor)}</td>
+              <td>${escapar(p.pedido_id || "—")}</td>
+            </tr>
+          `).join("")
+        : '<tr><td colspan="4">Nenhum pagamento registrado.</td></tr>';
+
+      const movimentosHtml = movimentos.length
+        ? movimentos.map(m => `
+            <tr>
+              <td>${m.criado_em ? new Date(m.criado_em).toLocaleString("pt-BR") : "—"}</td>
+              <td>${escapar(String(m.tipo || "—").toUpperCase())}</td>
+              <td>${dinheiro(m.valor)}</td>
+              <td>${escapar(m.descricao || m.motivo || "—")}</td>
+            </tr>
+          `).join("")
+        : '<tr><td colspan="4">Nenhuma movimentação de caixa registrada.</td></tr>';
+
+      document.querySelector("#relatorioImpressao").innerHTML = `
+        <div class="relatorio-caixa">
+          <h2>🚤 Ligeirinho PDV — Relatório de Caixa</h2>
+          <p><strong>Situação:</strong> ${escapar(String(caixa.status || "").toUpperCase())}</p>
+          <p><strong>Operador da abertura:</strong> ${escapar(nomeOperador)}</p>
+          <p><strong>Abertura:</strong> ${caixa.aberto_em ? new Date(caixa.aberto_em).toLocaleString("pt-BR") : "—"}</p>
+          <p><strong>Fechamento:</strong> ${caixa.fechado_em ? new Date(caixa.fechado_em).toLocaleString("pt-BR") : "Caixa ainda aberto"}</p>
+
+          <h3>Resumo financeiro</h3>
+          <table>
+            <tbody>
+              <tr><td>Valor inicial</td><td class="valor-relatorio">${dinheiro(valorInicial)}</td></tr>
+              <tr><td>Total de pagamentos</td><td class="valor-relatorio">${dinheiro(totalPagamentos)}</td></tr>
+              <tr><td>Suprimentos</td><td class="valor-relatorio">${dinheiro(totalSuprimentos)}</td></tr>
+              <tr><td>Sangrias</td><td class="valor-relatorio">${dinheiro(totalSangrias)}</td></tr>
+              <tr><td><strong>Saldo esperado registrado</strong></td><td class="valor-relatorio">${dinheiro(saldoEsperado)}</td></tr>
+              <tr><td>Valor contado</td><td class="valor-relatorio">${valorContado == null ? "Ainda não fechado" : dinheiro(valorContado)}</td></tr>
+              <tr><td>Diferença</td><td class="valor-relatorio">${diferenca == null ? "—" : dinheiro(diferenca)}</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Pagamentos por forma</h3>
+          <table>
+            <thead><tr><th>Forma</th><th>Total</th></tr></thead>
+            <tbody>${formasHtml}</tbody>
+          </table>
+
+          <h3>Detalhamento dos pagamentos</h3>
+          <table>
+            <thead><tr><th>Data do fechamento do pedido</th><th>Forma</th><th>Valor</th><th>Pedido</th></tr></thead>
+            <tbody>${pagamentosHtml}</tbody>
+          </table>
+
+          <h3>Suprimentos e sangrias</h3>
+          <table>
+            <thead><tr><th>Data</th><th>Tipo</th><th>Valor</th><th>Descrição</th></tr></thead>
+            <tbody>${movimentosHtml}</tbody>
+          </table>
+
+          <p><strong>Justificativa da diferença:</strong> ${escapar(caixa.justificativa || "—")}</p>
+          <p><small>Relatório gerado em ${new Date().toLocaleString("pt-BR")}</small></p>
+        </div>
+      `;
+
+      document.querySelector("#statusRelatorio").textContent =
+        "Relatório carregado. Confira os valores antes de imprimir.";
+      document.querySelector("#imprimirRelatorio").disabled = false;
+      document.querySelector("#imprimirRelatorio").onclick = () => window.print();
+    } catch (e) {
+      erro("Não foi possível gerar o relatório do caixa.", e);
+      const status = document.querySelector("#statusRelatorio");
+      if (status) status.textContent = "Falha ao carregar o relatório. Confira as permissões e os dados das tabelas.";
+    }
+  }
+
+  // MESAS
+
+  async function carregarMesas() {
+    const { data, error: e } = await supabase.from("mesas")
+      .select("*").order("numero");
+
+    if (e) throw e;
+    mesas = data || [];
+  }
+
+  function mostrarMesas() {
+    limpar();
+    painel.innerHTML = `
+      <h2>Controle de mesas</h2>
+      <button id="voltar">Voltar</button>
+      <div class="legenda-mesas">
+        <span class="legenda-livre">● Livre</span>
+        <span class="legenda-ocupada">● Ocupada</span>
+        <span class="legenda-aguardando">● Aguardando pagamento</span>
+      </div>
+      <div id="gradeMesas"></div>
+    `;
+
+    document.querySelector("#voltar").onclick = mostrarInicio;
+
+    const grade = document.querySelector("#gradeMesas");
+
+    mesas.forEach(mesa => {
+      const botao = document.createElement("button");
+      const status = String(mesa.status || "").toLowerCase();
+
+      const classe = status === "livre" ? "mesa-livre" :
+        status === "ocupada" ? "mesa-ocupada" :
+        status === "aguardando_pagamento" ? "mesa-aguardando" :
+        "mesa-desconhecida";
+
+      botao.className = "mesa " + classe;
+      const nomeStatus = status === "aguardando_pagamento"
+        ? "Aguardando pagamento"
+        : (mesa.status || "Status não definido");
+
+      botao.textContent = `Mesa ${mesa.numero} — ${nomeStatus}`;
+      botao.onclick = () => selecionarMesa(mesa);
+      grade.appendChild(botao);
+    });
+  }
+
+  async function selecionarMesa(mesa) {
+    if (mesa.status === "livre") {
+      await abrirMesa(mesa);
+      return;
+    }
+
+    const { data, error: e } = await supabase.from("pedidos")
+      .select("*")
+      .eq("mesa_id", mesa.id)
+      .eq("status", "aberto")
+      .maybeSingle();
+
+    if (e) {
+      erro("Erro ao consultar pedido.", e);
+      return;
+    }
+
+    if (!data) {
+      mensagem("Não foi encontrado pedido aberto nesta mesa.");
+      return;
+    }
+
+    pedidoAtual = data;
+    await carregarItensPedido();
+    mostrarPedido(mesa);
+  }
+
+  async function abrirMesa(mesa) {
+    try {
+      const { error: e } = await supabase.rpc("abrir_mesa", {
+        p_mesa_id: mesa.id,
+        p_garcom_id: usuarioAtual.id
+      });
+
+      if (e) throw e;
+
+      await carregarMesas();
+
+      const { data, error: ep } = await supabase.from("pedidos")
+        .select("*")
+        .eq("mesa_id", mesa.id)
+        .eq("status", "aberto")
+        .single();
+
+      if (ep) throw ep;
+
+      pedidoAtual = data;
+      await carregarItensPedido();
+      mostrarPedido(mesas.find(m => m.id === mesa.id) || mesa);
+    } catch (e) {
+      erro("Não foi possível abrir a mesa.", e);
+    }
+  }
+
+  // PEDIDOS E ITENS — itens_pedido É VENDA, NÃO É PERDA
+
+  async function carregarItensPedido() {
+    const { data, error: e } = await supabase.from("itens_pedido")
+      .select("id,produto_id,quantidade,preco_unitario,subtotal,observacao,status_producao")
+      .eq("pedido_id", pedidoAtual.id)
+      .order("criado_em");
+
+    if (e) throw e;
+    pedidoAtual.itens = data || [];
+  }
+
+  function mostrarPedido(mesa) {
+    limpar();
+    painel.innerHTML = `
+      <h2>Mesa ${mesa.numero}</h2>
+      <p>Pedido: ${pedidoAtual.id}</p>
+      <div id="itens"></div>
+      <label>Produto</label>
+      <select id="produto">
+        <option value="">Selecione</option>
+        ${produtos.filter(p => p.ativo).map(p =>
+          `<option value="${escapar(p.id)}">${escapar(p.nome)} — ${dinheiro(p.preco_venda)}</option>`
+        ).join("")}
+      </select>
+      <label>Quantidade</label>
+      <input id="quantidade" type="number" min="0.001" step="0.001" value="1">
+      <label>Observação</label>
+      <input id="observacao">
+      <button id="adicionar">Adicionar item</button>
+      <button id="fecharConta">Solicitar fechamento da conta</button>
+      <button id="voltar">Voltar às mesas</button>
+    `;
+
+    document.querySelector("#adicionar").onclick = adicionarItem;
+    document.querySelector("#fecharConta").onclick = solicitarFechamento;
+    document.querySelector("#voltar").onclick = async () => {
+      pedidoAtual = null;
+      await carregarMesas();
+      mostrarMesas();
+    };
+
+    mostrarItens();
+  }
+
+  function mostrarItens() {
+    const area = document.querySelector("#itens");
+    if (!area) return;
+
+    area.innerHTML = "";
+
+    const itens = pedidoAtual?.itens || [];
+    let total = 0;
+
+    if (!itens.length) {
+      area.textContent = "Nenhum item neste pedido.";
+    }
+
+    itens.forEach(item => {
+      const produto = produtos.find(p => p.id === item.produto_id);
+      const linha = document.createElement("div");
+      linha.className = "item-pedido";
+      const subtotal = Number(item.subtotal || 0);
+      total += subtotal;
+
+      const texto = document.createElement("p");
+      texto.textContent =
+        `${produto?.nome || "Produto"} — ${item.quantidade} x ${dinheiro(item.preco_unitario)} = ${dinheiro(subtotal)}` +
+        (item.observacao ? ` — ${item.observacao}` : "");
+
+      linha.appendChild(texto);
+
+      if (temPermissao("administrador", "garcom")) {
+        const remover = document.createElement("button");
+        remover.textContent = "Remover item";
+        remover.onclick = () => removerItem(item.id);
+        linha.appendChild(remover);
+      }
+
+      area.appendChild(linha);
+    });
+
+    const totalEl = document.createElement("h3");
+    totalEl.textContent = "Total dos itens: " + dinheiro(total);
+    area.appendChild(totalEl);
+  }
+
+  async function adicionarItem() {
+    const produtoId = document.querySelector("#produto").value;
+    const quantidade = Number(document.querySelector("#quantidade").value);
+    const observacao = document.querySelector("#observacao").value.trim();
+
+    if (!produtoId || !Number.isFinite(quantidade) || quantidade <= 0) {
+      mensagem("Selecione um produto e informe quantidade válida.");
+      return;
+    }
+
+    try {
+      const { error: e } = await supabase.rpc("adicionar_item_pedido", {
+        p_pedido_id: pedidoAtual.id,
+        p_produto_id: produtoId,
+        p_quantidade: quantidade,
+        p_observacao: observacao || null
+      });
+
+      if (e) throw e;
+
+      await atualizarPedidoAtual();
+      mensagem("Item adicionado.");
+    } catch (e) {
+      erro("Não foi possível adicionar o item.", e);
+    }
+  }
+
+  async function removerItem(itemId) {
+    if (!confirm("Deseja remover este item?")) return;
+
+    try {
+      const { error: e } = await supabase.rpc("remover_item_pedido", {
+        p_item_id: itemId
+      });
+
+      if (e) throw e;
+      await atualizarPedidoAtual();
+    } catch (e) {
+      erro("Não foi possível remover o item.", e);
+    }
+  }
+
+  async function atualizarPedidoAtual() {
+    const { data, error: e } = await supabase.from("pedidos")
+      .select("*").eq("id", pedidoAtual.id).single();
+
+    if (e) throw e;
+
+    pedidoAtual = data;
+    await carregarItensPedido();
+
+    const mesa = mesas.find(m => m.id === pedidoAtual.mesa_id);
+    if (mesa) mostrarPedido(mesa);
+  }
+
+  async function solicitarFechamento() {
+    if (!pedidoAtual?.id) {
+      mensagem("Nenhum pedido selecionado.");
+      return;
+    }
+
+    if (!confirm("Deseja solicitar o fechamento desta conta?")) return;
+
+    try {
+      const { error: e } = await supabase.rpc("solicitar_fechamento_conta", {
+        p_pedido_id: pedidoAtual.id
+      });
+
+      if (e) throw e;
+
+      await carregarMesas();
+      pedidoAtual = null;
+      mensagem("Conta enviada ao caixa.");
+      mostrarMesas();
+    } catch (e) {
+      erro("Não foi possível solicitar o fechamento.", e);
+    }
+  }
+
+  // CONTAS AGUARDANDO PAGAMENTO
+
+  async function carregarContasAguardando() {
+    if (!exigirCaixa()) return;
+
+    try {
+      const { data, error: e } = await supabase.rpc("listar_contas_aguardando_pagamento");
+      if (e) throw e;
+      mostrarContasAguardando(data || []);
+    } catch (e) {
+      erro("Não foi possível carregar as contas.", e);
+    }
+  }
+
+  function mostrarContasAguardando(contas) {
+    limpar();
+    painel.innerHTML = `
+      <h2>Contas aguardando pagamento</h2>
+      <button id="atualizar">Atualizar</button>
+      <button id="voltar">Voltar</button>
+      <div id="listaContas"></div>
+    `;
+
+    document.querySelector("#atualizar").onclick = carregarContasAguardando;
+    document.querySelector("#voltar").onclick = mostrarInicio;
+
+    const lista = document.querySelector("#listaContas");
+
+    if (!contas.length) {
+      lista.textContent = "Não há contas aguardando pagamento.";
+      return;
+    }
+
+    contas.forEach(conta => {
+      const item = document.createElement("div");
+      item.className = "item-pedido";
+
+      const mesa = conta.mesa_numero ?? conta.numero_mesa ?? conta.mesa ?? "—";
+      const total = Number(conta.valor_total ?? conta.total ?? conta.valor ?? 0);
+      const garcom = conta.garcom_nome ?? conta.nome_garcom ?? conta.garcom ?? "";
+
+      const texto = document.createElement("p");
+      texto.textContent = `Mesa ${mesa} — ${dinheiro(total)}` +
+        (garcom ? ` — Garçom: ${garcom}` : "");
+
+      const pagar = document.createElement("button");
+      pagar.textContent = "Registrar pagamento";
+      pagar.onclick = () => mostrarFormularioPagamento(conta);
+
+      item.append(texto, pagar);
+      lista.appendChild(item);
+    });
+  }
+
+  function mostrarFormularioPagamento(conta) {
+    if (!exigirCaixa()) return;
+
+    const pedidoId = conta.pedido_id ?? conta.id_pedido ?? conta.id;
+    const total = Number(conta.valor_total ?? conta.total ?? conta.valor ?? 0);
+
+    limpar();
+    painel.innerHTML = `
+      <h2>Registrar pagamento</h2>
+      <p>Valor da conta: <strong>${dinheiro(total)}</strong></p>
+      <label>Forma de pagamento</label>
+      <select id="formaPagamento">
+        <option value="dinheiro">Dinheiro</option>
+        <option value="pix">Pix</option>
+        <option value="debito">Débito</option>
+        <option value="credito">Crédito</option>
+      </select>
+      <label>Valor a pagar</label>
+      <input id="valorPagamento" type="number" min="0.01" step="0.01" value="${total.toFixed(2)}">
+      <div id="campoRecebido">
+        <label>Valor recebido em dinheiro</label>
+        <input id="valorRecebido" type="number" min="0" step="0.01" value="${total.toFixed(2)}">
+      </div>
+      <button id="confirmarPagamento">Confirmar pagamento</button>
+      <button id="voltar">Voltar</button>
+      <p id="mensagemPagamento"></p>
+    `;
+
+    const forma = document.querySelector("#formaPagamento");
+    forma.onchange = () => {
+      document.querySelector("#campoRecebido").style.display =
+        forma.value === "dinheiro" ? "block" : "none";
+    };
+
+    document.querySelector("#confirmarPagamento").onclick =
+      () => registrarPagamento(pedidoId);
+    document.querySelector("#voltar").onclick = carregarContasAguardando;
+  }
+
+  async function registrarPagamento(pedidoId) {
+    if (!exigirCaixa()) return;
+
+    const forma = document.querySelector("#formaPagamento").value;
+    const valor = Number(document.querySelector("#valorPagamento").value);
+    const recebido = forma === "dinheiro"
+      ? Number(document.querySelector("#valorRecebido").value)
+      : null;
+
+    const aviso = document.querySelector("#mensagemPagamento");
+
+    if (!pedidoId || !Number.isFinite(valor) || valor <= 0) {
+      aviso.textContent = "Informe um valor válido.";
+      return;
+    }
+
+    if (forma === "dinheiro" &&
+        (!Number.isFinite(recebido) || recebido < valor)) {
+      aviso.textContent = "O valor recebido deve ser igual ou maior que o pagamento.";
+      return;
+    }
+
+    try {
+      const { error: e } = await supabase.rpc("registrar_pagamento", {
+        p_pedido_id: pedidoId,
+        p_forma_pagamento: forma,
+        p_valor: valor,
+        p_valor_recebido: recebido
+      });
+
+      if (e) throw e;
+
+      mensagem("Pagamento registrado.");
+      await carregarProdutos();
+      await carregarMesas();
+      await carregarContasAguardando();
+    } catch (e) {
+      erro("Não foi possível registrar o pagamento.", e);
+    }
+  }
+
+  // ATUALIZAÇÃO EM TEMPO REAL
+
+  function iniciarRealtime() {
+    if (canalRealtime) {
+      supabase.removeChannel(canalRealtime);
+      canalRealtime = null;
+    }
+
+    canalRealtime = supabase.channel("ligeirinho-atualizacoes")
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "mesas" },
+        async () => {
+          try {
+            await carregarMesas();
+            if (document.querySelector("#gradeMesas")) mostrarMesas();
+          } catch (e) {
+            console.error("Erro ao atualizar mesas:", e);
+          }
+        }
+      )
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "pedidos" },
+        async payload => {
+          try {
+            await carregarMesas();
+
+            if (pedidoAtual?.id &&
+                (payload.new?.id === pedidoAtual.id ||
+                 payload.old?.id === pedidoAtual.id)) {
+              await atualizarPedidoAtual();
+            } else if (document.querySelector("#gradeMesas")) {
+              mostrarMesas();
+            }
+          } catch (e) {
+            console.error("Erro ao atualizar pedidos:", e);
+          }
+        }
+      )
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "itens_pedido" },
+        async () => {
+          try {
+            if (pedidoAtual?.id) await atualizarPedidoAtual();
+          } catch (e) {
+            console.error("Erro ao atualizar itens:", e);
+          }
+        }
+      )
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "produtos" },
+        async () => {
+          try {
+            await carregarProdutos();
+            if (document.querySelector("#listaProdutos")) renderizarProdutos();
+            if (document.querySelector("#listaEstoque")) mostrarEstoque();
+          } catch (e) {
+            console.error("Erro ao atualizar produtos:", e);
+          }
+        }
+      )
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "movimentacoes_estoque" },
+        async () => {
+          try {
+            await carregarProdutos();
+            if (document.querySelector("#listaEstoque")) mostrarEstoque();
+          } catch (e) {
+            console.error("Erro ao atualizar estoque:", e);
+          }
+        }
+      )
+      .subscribe();
+  }
+
+})();
