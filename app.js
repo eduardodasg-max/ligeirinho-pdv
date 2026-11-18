@@ -93,6 +93,16 @@
       .legenda-aguardando{background:#fff2cc;color:#765000}
       .item-pedido{padding:10px;margin:8px 0;border:1px solid #d6e0e8;border-radius:8px;background:#f8fbfd}
       .painel button#sair{background:#b83232}
+      .relatorio-caixa{background:#fff;color:#17324d;padding:18px;border:1px solid #d6e0e8;border-radius:10px;margin:12px 0}
+      .relatorio-caixa table{width:100%;border-collapse:collapse;margin:10px 0}
+      .relatorio-caixa th,.relatorio-caixa td{padding:8px;border-bottom:1px solid #d6e0e8;text-align:left}
+      .relatorio-caixa .valor-relatorio{font-weight:700}
+      @media print{
+        body *{visibility:hidden!important}
+        #relatorioImpressao,#relatorioImpressao *{visibility:visible!important}
+        #relatorioImpressao{position:absolute;left:0;top:0;width:100%;border:0}
+        .botoes-relatorio{display:none!important}
+      }
       @media(max-width:600px){#gradeMesas{grid-template-columns:repeat(2,minmax(0,1fr))}}
     `;
     document.head.appendChild(estilo);
@@ -992,10 +1002,12 @@
         <label>Justificativa da diferença</label>
         <textarea id="justificativaFechamento" rows="3"></textarea>
         <button id="fecharCaixa">Fechar caixa</button>
+        <button id="relatorioCaixaAtual">Relatório deste caixa</button>
       `;
 
       document.querySelector("#registrarMovCaixa").onclick = registrarMovimentacaoCaixa;
       document.querySelector("#fecharCaixa").onclick = fecharCaixa;
+      document.querySelector("#relatorioCaixaAtual").onclick = () => relatorioCaixa(caixa.id);
     } catch (e) {
       erro("Não foi possível consultar o caixa.", e);
     }
@@ -1150,10 +1162,188 @@
           <p>Diferença: ${c.diferenca == null ? "—" : dinheiro(c.diferenca)}</p>
           <p>Justificativa: ${escapar(c.justificativa || "—")}</p>
         `;
+        const botaoRelatorio = document.createElement("button");
+        botaoRelatorio.textContent = "Ver relatório completo";
+        botaoRelatorio.onclick = () => relatorioCaixa(c.id, true);
+        item.appendChild(botaoRelatorio);
         lista.appendChild(item);
       });
     } catch (e) {
       erro("Não foi possível carregar o histórico de caixas.", e);
+    }
+  }
+
+  // RELATÓRIO DE CAIXA — CONSULTA, RESUMO E IMPRESSÃO
+
+  async function relatorioCaixa(caixaId, voltarParaHistorico = false) {
+    if (!exigirCaixa()) return;
+    if (!caixaId) {
+      mensagem("Não foi possível identificar o caixa.");
+      return;
+    }
+
+    limpar();
+    painel.innerHTML = `
+      <h2>Relatório de caixa</h2>
+      <p id="statusRelatorio">Carregando informações...</p>
+      <div id="relatorioImpressao"></div>
+      <div class="botoes-relatorio">
+        <button id="imprimirRelatorio" disabled>Imprimir relatório</button>
+        <button id="voltarRelatorio">Voltar</button>
+      </div>
+    `;
+    document.querySelector("#voltarRelatorio").onclick = () => {
+      if (voltarParaHistorico) historicoCaixa();
+      else mostrarCaixa();
+    };
+
+    try {
+      const { data: caixa, error: erroCaixa } = await supabase
+        .from("caixas")
+        .select("*")
+        .eq("id", caixaId)
+        .single();
+
+      if (erroCaixa) throw erroCaixa;
+      if (!caixa) throw new Error("Caixa não encontrado.");
+
+      const inicio = caixa.aberto_em || new Date(0).toISOString();
+      const fim = caixa.fechado_em || new Date().toISOString();
+
+      const [resultadoPagamentos, resultadoMovimentos] = await Promise.all([
+        supabase.from("pagamentos")
+          .select("*")
+          .gte("criado_em", inicio)
+          .lte("criado_em", fim)
+          .order("criado_em", { ascending: true }),
+        supabase.from("movimentacoes_caixa")
+          .select("*")
+          .eq("caixa_id", caixaId)
+          .order("criado_em", { ascending: true })
+      ]);
+
+      if (resultadoPagamentos.error) throw resultadoPagamentos.error;
+      if (resultadoMovimentos.error) throw resultadoMovimentos.error;
+
+      const pagamentos = resultadoPagamentos.data || [];
+      const movimentos = resultadoMovimentos.data || [];
+
+      const totalPorForma = {};
+      pagamentos.forEach(p => {
+        const forma = String(p.forma_pagamento || "não informado");
+        totalPorForma[forma] = (totalPorForma[forma] || 0) + Number(p.valor || 0);
+      });
+
+      const totalPagamentos = pagamentos.reduce(
+        (soma, p) => soma + Number(p.valor || 0), 0
+      );
+      const totalSuprimentos = movimentos
+        .filter(m => String(m.tipo).toLowerCase() === "suprimento")
+        .reduce((soma, m) => soma + Number(m.valor || 0), 0);
+      const totalSangrias = movimentos
+        .filter(m => String(m.tipo).toLowerCase() === "sangria")
+        .reduce((soma, m) => soma + Number(m.valor || 0), 0);
+
+      const valorInicial = Number(caixa.valor_inicial || 0);
+      const saldoEsperado = Number(
+        caixa.valor_esperado ?? (valorInicial + totalPagamentos + totalSuprimentos - totalSangrias)
+      );
+      const valorContado = caixa.valor_contado == null ? null : Number(caixa.valor_contado);
+      const diferenca = caixa.diferenca == null
+        ? (valorContado == null ? null : Number((valorContado - saldoEsperado).toFixed(2)))
+        : Number(caixa.diferenca);
+
+      let nomeOperador = "Não identificado";
+      if (caixa.operador_id) {
+        const resultadoOperador = await supabase.from("perfis_usuarios")
+          .select("nome")
+          .eq("id", caixa.operador_id)
+          .maybeSingle();
+        if (!resultadoOperador.error) {
+          nomeOperador = resultadoOperador.data?.nome || nomeOperador;
+        }
+      }
+
+      const formasHtml = Object.entries(totalPorForma).length
+        ? Object.entries(totalPorForma).map(([forma, valor]) =>
+            `<tr><td>${escapar(forma.toUpperCase())}</td><td class="valor-relatorio">${dinheiro(valor)}</td></tr>`
+          ).join("")
+        : '<tr><td colspan="2">Nenhum pagamento encontrado neste período.</td></tr>';
+
+      const pagamentosHtml = pagamentos.length
+        ? pagamentos.map(p => `
+            <tr>
+              <td>${p.criado_em ? new Date(p.criado_em).toLocaleString("pt-BR") : "—"}</td>
+              <td>${escapar(String(p.forma_pagamento || "—").toUpperCase())}</td>
+              <td>${dinheiro(p.valor)}</td>
+              <td>${escapar(p.pedido_id || "—")}</td>
+            </tr>
+          `).join("")
+        : '<tr><td colspan="4">Nenhum pagamento registrado.</td></tr>';
+
+      const movimentosHtml = movimentos.length
+        ? movimentos.map(m => `
+            <tr>
+              <td>${m.criado_em ? new Date(m.criado_em).toLocaleString("pt-BR") : "—"}</td>
+              <td>${escapar(String(m.tipo || "—").toUpperCase())}</td>
+              <td>${dinheiro(m.valor)}</td>
+              <td>${escapar(m.descricao || m.motivo || "—")}</td>
+            </tr>
+          `).join("")
+        : '<tr><td colspan="4">Nenhuma movimentação de caixa registrada.</td></tr>';
+
+      document.querySelector("#relatorioImpressao").innerHTML = `
+        <div class="relatorio-caixa">
+          <h2>🚤 Ligeirinho PDV — Relatório de Caixa</h2>
+          <p><strong>Situação:</strong> ${escapar(String(caixa.status || "").toUpperCase())}</p>
+          <p><strong>Operador da abertura:</strong> ${escapar(nomeOperador)}</p>
+          <p><strong>Abertura:</strong> ${caixa.aberto_em ? new Date(caixa.aberto_em).toLocaleString("pt-BR") : "—"}</p>
+          <p><strong>Fechamento:</strong> ${caixa.fechado_em ? new Date(caixa.fechado_em).toLocaleString("pt-BR") : "Caixa ainda aberto"}</p>
+
+          <h3>Resumo financeiro</h3>
+          <table>
+            <tbody>
+              <tr><td>Valor inicial</td><td class="valor-relatorio">${dinheiro(valorInicial)}</td></tr>
+              <tr><td>Total de pagamentos</td><td class="valor-relatorio">${dinheiro(totalPagamentos)}</td></tr>
+              <tr><td>Suprimentos</td><td class="valor-relatorio">${dinheiro(totalSuprimentos)}</td></tr>
+              <tr><td>Sangrias</td><td class="valor-relatorio">${dinheiro(totalSangrias)}</td></tr>
+              <tr><td><strong>Saldo esperado registrado</strong></td><td class="valor-relatorio">${dinheiro(saldoEsperado)}</td></tr>
+              <tr><td>Valor contado</td><td class="valor-relatorio">${valorContado == null ? "Ainda não fechado" : dinheiro(valorContado)}</td></tr>
+              <tr><td>Diferença</td><td class="valor-relatorio">${diferenca == null ? "—" : dinheiro(diferenca)}</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Pagamentos por forma</h3>
+          <table>
+            <thead><tr><th>Forma</th><th>Total</th></tr></thead>
+            <tbody>${formasHtml}</tbody>
+          </table>
+
+          <h3>Detalhamento dos pagamentos</h3>
+          <table>
+            <thead><tr><th>Data</th><th>Forma</th><th>Valor</th><th>Pedido</th></tr></thead>
+            <tbody>${pagamentosHtml}</tbody>
+          </table>
+
+          <h3>Suprimentos e sangrias</h3>
+          <table>
+            <thead><tr><th>Data</th><th>Tipo</th><th>Valor</th><th>Descrição</th></tr></thead>
+            <tbody>${movimentosHtml}</tbody>
+          </table>
+
+          <p><strong>Justificativa da diferença:</strong> ${escapar(caixa.justificativa || "—")}</p>
+          <p><small>Relatório gerado em ${new Date().toLocaleString("pt-BR")}</small></p>
+        </div>
+      `;
+
+      document.querySelector("#statusRelatorio").textContent =
+        "Relatório carregado. Confira os valores antes de imprimir.";
+      document.querySelector("#imprimirRelatorio").disabled = false;
+      document.querySelector("#imprimirRelatorio").onclick = () => window.print();
+    } catch (e) {
+      erro("Não foi possível gerar o relatório do caixa.", e);
+      const status = document.querySelector("#statusRelatorio");
+      if (status) status.textContent = "Falha ao carregar o relatório. Confira as permissões e os dados das tabelas.";
     }
   }
 
