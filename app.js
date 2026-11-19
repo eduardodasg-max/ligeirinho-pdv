@@ -611,10 +611,17 @@
   async function alterarStatusProduto(p) {
     if (!exigirAdministrador()) return;
     if (!confirm(`Deseja ${p.ativo ? "desativar" : "reativar"} ${p.nome}?`)) return;
+
     try {
-      const { error: e } = await supabase.from("produtos")
-        .update({ ativo: !p.ativo }).eq("id", p.id);
+      const { data, error: e } = await supabase.from("produtos")
+        .update({ ativo: !p.ativo })
+        .eq("id", p.id)
+        .select("id")
+        .maybeSingle();
+
       if (e) throw e;
+      if (!data) throw new Error("O banco não confirmou a alteração. Verifique as permissões RLS.");
+
       await carregarProdutos();
       mostrarProdutos();
     } catch (e) {
@@ -622,7 +629,7 @@
     }
   }
 
-  // NOVA FUNÇÃO — EXCLUSÃO SEGURA DE PRODUTOS
+  // EXCLUSÃO SEGURA DE PRODUTOS
 
   async function excluirProduto(p) {
     if (!exigirAdministrador()) return;
@@ -634,69 +641,70 @@
 
     const nome = p.nome || "este produto";
 
-    const confirmar = confirm(
+    if (!confirm(
       `Deseja excluir "${nome}"?\n\n` +
       "O sistema verificará se existe histórico de venda, perda ou movimentação de estoque. " +
-      "Se houver histórico, o produto será apenas desativado para preservar os registros. " +
+      "Se houver histórico, o produto será desativado para preservar os registros. " +
       "Se não houver histórico, será excluído definitivamente."
-    );
-
-    if (!confirmar) return;
+    )) return;
 
     try {
-      // Verifica se o produto já foi utilizado em vendas,
-      // perdas ou movimentações de estoque.
-      // Se qualquer consulta falhar, a operação é interrompida.
+      // produto_id existe nas três tabelas consultadas.
+      // Usamos essa coluna para verificar o histórico sem depender
+      // de uma coluna id que não foi confirmada em todas elas.
 
       const verificacoes = await Promise.all([
         supabase.from("itens_pedido")
-          .select("id")
+          .select("produto_id")
           .eq("produto_id", p.id)
           .limit(1),
 
         supabase.from("itens_perdidos")
-          .select("id")
+          .select("produto_id")
           .eq("produto_id", p.id)
           .limit(1),
 
         supabase.from("movimentacoes_estoque")
-          .select("id")
+          .select("produto_id")
           .eq("produto_id", p.id)
           .limit(1)
       ]);
 
       const erroConsulta = verificacoes.find(r => r.error);
-
-      if (erroConsulta) {
-        throw erroConsulta.error;
-      }
+      if (erroConsulta) throw erroConsulta.error;
 
       const possuiHistorico = verificacoes.some(
         r => Array.isArray(r.data) && r.data.length > 0
       );
 
       if (possuiHistorico) {
-        const { error: erroAtualizacao } = await supabase
+        const { data, error: erroAtualizacao } = await supabase
           .from("produtos")
           .update({ ativo: false })
-          .eq("id", p.id);
+          .eq("id", p.id)
+          .select("id")
+          .maybeSingle();
 
-        if (erroAtualizacao) {
-          throw erroAtualizacao;
+        if (erroAtualizacao) throw erroAtualizacao;
+        if (!data) {
+          throw new Error("O banco não confirmou a desativação do produto. Verifique as permissões RLS.");
         }
 
         mensagem(
           `O produto "${nome}" possui histórico de vendas, perdas ou estoque. ` +
-          "Para preservar os registros, ele foi desativado e não aparecerá entre os produtos ativos."
+          "Para preservar os registros, ele foi desativado."
         );
       } else {
-        const { error: erroExclusao } = await supabase
+        const { data, error: erroExclusao } = await supabase
           .from("produtos")
           .delete()
-          .eq("id", p.id);
+          .eq("id", p.id)
+          .select("id")
+          .maybeSingle();
 
-        if (erroExclusao) {
-          throw erroExclusao;
+        if (erroExclusao) throw erroExclusao;
+        if (!data) {
+          throw new Error("O banco não confirmou a exclusão. Verifique as permissões RLS ou se existe alguma referência ao produto.");
         }
 
         mensagem(`Produto "${nome}" excluído com sucesso.`);
@@ -716,7 +724,7 @@
       ].filter(Boolean).join(" | ");
 
       mensagem(
-        "Não foi possível excluir o produto. Nenhuma exclusão foi concluída. " +
+        "Não foi possível concluir a operação do produto.\n" +
         (detalhes || String(e))
       );
     }
@@ -1197,7 +1205,7 @@
         `Confirma o fechamento?\nEsperado: ${dinheiro(esperado)}\nContado: ${dinheiro(contado)}\nDiferença: ${dinheiro(diferenca)}`
       )) return;
 
-      const { data, error: e } = await supabase.rpc("fechar_caixa", {
+      const { error: e } = await supabase.rpc("fechar_caixa", {
         p_valor_contado: contado,
         p_justificativa: justificativa || null,
         p_caixa_id: caixa.id
@@ -1278,10 +1286,13 @@
     }
   }
 
-  // RELATÓRIO DE CAIXA — CONSULTA, RESUMO E IMPRESSÃO
+  // RELATÓRIO DE CAIXA
+  // Pagamentos filtrados pelo caixa_id e data pago_em.
+  // Movimentações filtradas pelo caixa_id e data criado_em.
 
   async function relatorioCaixa(caixaId, voltarParaHistorico = false) {
     if (!exigirCaixa()) return;
+
     if (!caixaId) {
       mensagem("Não foi possível identificar o caixa.");
       return;
@@ -1297,6 +1308,7 @@
         <button id="voltarRelatorio">Voltar</button>
       </div>
     `;
+
     document.querySelector("#voltarRelatorio").onclick = () => {
       if (voltarParaHistorico) historicoCaixa();
       else mostrarCaixa();
@@ -1312,51 +1324,29 @@
       if (erroCaixa) throw erroCaixa;
       if (!caixa) throw new Error("Caixa não encontrado.");
 
-      const inicio = caixa.aberto_em || new Date(0).toISOString();
-      const fim = caixa.fechado_em || new Date().toISOString();
-
-      // pagamentos.criado_em não existe na tabela pagamentos.
-      // Primeiro buscamos os pedidos fechados durante o período do caixa.
-      // Depois buscamos os pagamentos relacionados a esses pedidos.
-      const [resultadoPedidos, resultadoMovimentos] = await Promise.all([
-        supabase.from("pedidos")
-          .select("id,fechado_em")
-          .not("fechado_em", "is", null)
-          .gte("fechado_em", inicio)
-          .lte("fechado_em", fim)
-          .order("fechado_em", { ascending: true }),
+      // Busca diretamente os pagamentos vinculados a este caixa.
+      // Não utiliza pedidos.fechado_em para identificar pagamentos.
+      const [resultadoPagamentos, resultadoMovimentos] = await Promise.all([
+        supabase.from("pagamentos")
+          .select("id,pedido_id,forma_pagamento,valor,valor_recebido,troco,pago_em,caixa_id")
+          .eq("caixa_id", caixaId)
+          .order("pago_em", { ascending: true }),
 
         supabase.from("movimentacoes_caixa")
-          .select("*")
+          .select("id,caixa_id,operador_id,tipo,valor,descricao,criado_em")
           .eq("caixa_id", caixaId)
           .order("criado_em", { ascending: true })
       ]);
 
-      if (resultadoPedidos.error) throw resultadoPedidos.error;
+      if (resultadoPagamentos.error) throw resultadoPagamentos.error;
       if (resultadoMovimentos.error) throw resultadoMovimentos.error;
 
-      const pedidosFechados = resultadoPedidos.data || [];
-      const idsPedidos = pedidosFechados.map(p => p.id);
-      const dataFechamentoPorPedido = {};
-
-      pedidosFechados.forEach(p => {
-        dataFechamentoPorPedido[p.id] = p.fechado_em;
-      });
-
-      let pagamentos = [];
-
-      if (idsPedidos.length) {
-        const resultadoPagamentos = await supabase.from("pagamentos")
-          .select("*")
-          .in("pedido_id", idsPedidos);
-
-        if (resultadoPagamentos.error) throw resultadoPagamentos.error;
-        pagamentos = resultadoPagamentos.data || [];
-      }
-
+      const pagamentos = resultadoPagamentos.data || [];
       const movimentos = resultadoMovimentos.data || [];
 
+      // Soma os pagamentos deste caixa, agrupando por forma.
       const totalPorForma = {};
+
       pagamentos.forEach(p => {
         const forma = String(p.forma_pagamento || "não informado");
         totalPorForma[forma] = (totalPorForma[forma] || 0) + Number(p.valor || 0);
@@ -1367,51 +1357,72 @@
       );
 
       const totalSuprimentos = movimentos
-        .filter(m => String(m.tipo).toLowerCase() === "suprimento")
+        .filter(m => String(m.tipo || "").toLowerCase() === "suprimento")
         .reduce((soma, m) => soma + Number(m.valor || 0), 0);
 
       const totalSangrias = movimentos
-        .filter(m => String(m.tipo).toLowerCase() === "sangria")
+        .filter(m => String(m.tipo || "").toLowerCase() === "sangria")
         .reduce((soma, m) => soma + Number(m.valor || 0), 0);
 
       const valorInicial = Number(caixa.valor_inicial || 0);
-      const saldoEsperado = Number(
-        caixa.valor_esperado ?? (valorInicial + totalPagamentos + totalSuprimentos - totalSangrias)
+
+      // O saldo esperado salvo na tabela caixas é o valor oficial
+      // utilizado pelo fechamento. O cálculo abaixo serve como conferência.
+      const saldoCalculado = Number(
+        (valorInicial + totalPagamentos + totalSuprimentos - totalSangrias).toFixed(2)
       );
-      const valorContado = caixa.valor_contado == null ? null : Number(caixa.valor_contado);
+
+      const saldoEsperado = caixa.valor_esperado == null
+        ? saldoCalculado
+        : Number(caixa.valor_esperado);
+
+      const valorContado = caixa.valor_contado == null
+        ? null
+        : Number(caixa.valor_contado);
+
       const diferenca = caixa.diferenca == null
-        ? (valorContado == null ? null : Number((valorContado - saldoEsperado).toFixed(2)))
+        ? (valorContado == null
+          ? null
+          : Number((valorContado - saldoEsperado).toFixed(2)))
         : Number(caixa.diferenca);
 
+      // Identifica o operador que abriu o caixa.
       let nomeOperador = "Não identificado";
+
       if (caixa.operador_id) {
         const resultadoOperador = await supabase.from("perfis_usuarios")
           .select("nome")
           .eq("id", caixa.operador_id)
           .maybeSingle();
-        if (!resultadoOperador.error) {
-          nomeOperador = resultadoOperador.data?.nome || nomeOperador;
-        }
+
+        if (resultadoOperador.error) throw resultadoOperador.error;
+
+        nomeOperador = resultadoOperador.data?.nome || nomeOperador;
       }
 
-      const formasHtml = Object.entries(totalPorForma).length
-        ? Object.entries(totalPorForma).map(([forma, valor]) =>
-            `<tr><td>${escapar(forma.toUpperCase())}</td><td class="valor-relatorio">${dinheiro(valor)}</td></tr>`
-          ).join("")
-        : '<tr><td colspan="2">Nenhum pagamento encontrado neste período.</td></tr>';
+      const formas = Object.entries(totalPorForma);
+
+      const formasHtml = formas.length
+        ? formas.map(([forma, valor]) => `
+            <tr>
+              <td>${escapar(forma.toUpperCase())}</td>
+              <td class="valor-relatorio">${dinheiro(valor)}</td>
+            </tr>
+          `).join("")
+        : '<tr><td colspan="2">Nenhum pagamento registrado neste caixa.</td></tr>';
 
       const pagamentosHtml = pagamentos.length
         ? pagamentos.map(p => `
             <tr>
-              <td>${dataFechamentoPorPedido[p.pedido_id]
-                ? new Date(dataFechamentoPorPedido[p.pedido_id]).toLocaleString("pt-BR")
-                : "—"}</td>
+              <td>${p.pago_em ? new Date(p.pago_em).toLocaleString("pt-BR") : "—"}</td>
               <td>${escapar(String(p.forma_pagamento || "—").toUpperCase())}</td>
               <td>${dinheiro(p.valor)}</td>
+              <td>${dinheiro(p.valor_recebido)}</td>
+              <td>${dinheiro(p.troco)}</td>
               <td>${escapar(p.pedido_id || "—")}</td>
             </tr>
           `).join("")
-        : '<tr><td colspan="4">Nenhum pagamento registrado.</td></tr>';
+        : '<tr><td colspan="6">Nenhum pagamento registrado neste caixa.</td></tr>';
 
       const movimentosHtml = movimentos.length
         ? movimentos.map(m => `
@@ -1419,14 +1430,17 @@
               <td>${m.criado_em ? new Date(m.criado_em).toLocaleString("pt-BR") : "—"}</td>
               <td>${escapar(String(m.tipo || "—").toUpperCase())}</td>
               <td>${dinheiro(m.valor)}</td>
-              <td>${escapar(m.descricao || m.motivo || "—")}</td>
+              <td>${escapar(m.descricao || "—")}</td>
             </tr>
           `).join("")
         : '<tr><td colspan="4">Nenhuma movimentação de caixa registrada.</td></tr>';
 
+      const diferencaCalculo = Number((saldoEsperado - saldoCalculado).toFixed(2));
+
       document.querySelector("#relatorioImpressao").innerHTML = `
         <div class="relatorio-caixa">
           <h2>🚤 Ligeirinho PDV — Relatório de Caixa</h2>
+
           <p><strong>Situação:</strong> ${escapar(String(caixa.status || "").toUpperCase())}</p>
           <p><strong>Operador da abertura:</strong> ${escapar(nomeOperador)}</p>
           <p><strong>Abertura:</strong> ${caixa.aberto_em ? new Date(caixa.aberto_em).toLocaleString("pt-BR") : "—"}</p>
@@ -1435,31 +1449,78 @@
           <h3>Resumo financeiro</h3>
           <table>
             <tbody>
-              <tr><td>Valor inicial</td><td class="valor-relatorio">${dinheiro(valorInicial)}</td></tr>
-              <tr><td>Total de pagamentos</td><td class="valor-relatorio">${dinheiro(totalPagamentos)}</td></tr>
-              <tr><td>Suprimentos</td><td class="valor-relatorio">${dinheiro(totalSuprimentos)}</td></tr>
-              <tr><td>Sangrias</td><td class="valor-relatorio">${dinheiro(totalSangrias)}</td></tr>
-              <tr><td><strong>Saldo esperado registrado</strong></td><td class="valor-relatorio">${dinheiro(saldoEsperado)}</td></tr>
-              <tr><td>Valor contado</td><td class="valor-relatorio">${valorContado == null ? "Ainda não fechado" : dinheiro(valorContado)}</td></tr>
-              <tr><td>Diferença</td><td class="valor-relatorio">${diferenca == null ? "—" : dinheiro(diferenca)}</td></tr>
+              <tr>
+                <td>Valor inicial</td>
+                <td class="valor-relatorio">${dinheiro(valorInicial)}</td>
+              </tr>
+              <tr>
+                <td>Total de pagamentos deste caixa</td>
+                <td class="valor-relatorio">${dinheiro(totalPagamentos)}</td>
+              </tr>
+              <tr>
+                <td>Suprimentos</td>
+                <td class="valor-relatorio">${dinheiro(totalSuprimentos)}</td>
+              </tr>
+              <tr>
+                <td>Sangrias</td>
+                <td class="valor-relatorio">${dinheiro(totalSangrias)}</td>
+              </tr>
+              <tr>
+                <td><strong>Saldo calculado</strong></td>
+                <td class="valor-relatorio">${dinheiro(saldoCalculado)}</td>
+              </tr>
+              <tr>
+                <td><strong>Saldo esperado registrado no caixa</strong></td>
+                <td class="valor-relatorio">${dinheiro(saldoEsperado)}</td>
+              </tr>
+              <tr>
+                <td>Diferença entre cálculo e saldo registrado</td>
+                <td class="valor-relatorio">${dinheiro(diferencaCalculo)}</td>
+              </tr>
+              <tr>
+                <td>Valor contado no fechamento</td>
+                <td class="valor-relatorio">${valorContado == null ? "Ainda não fechado" : dinheiro(valorContado)}</td>
+              </tr>
+              <tr>
+                <td>Diferença do fechamento</td>
+                <td class="valor-relatorio">${diferenca == null ? "—" : dinheiro(diferenca)}</td>
+              </tr>
             </tbody>
           </table>
 
           <h3>Pagamentos por forma</h3>
           <table>
-            <thead><tr><th>Forma</th><th>Total</th></tr></thead>
+            <thead>
+              <tr><th>Forma de pagamento</th><th>Total</th></tr>
+            </thead>
             <tbody>${formasHtml}</tbody>
           </table>
 
           <h3>Detalhamento dos pagamentos</h3>
           <table>
-            <thead><tr><th>Data do fechamento do pedido</th><th>Forma</th><th>Valor</th><th>Pedido</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Data do pagamento</th>
+                <th>Forma</th>
+                <th>Valor</th>
+                <th>Recebido</th>
+                <th>Troco</th>
+                <th>Pedido</th>
+              </tr>
+            </thead>
             <tbody>${pagamentosHtml}</tbody>
           </table>
 
           <h3>Suprimentos e sangrias</h3>
           <table>
-            <thead><tr><th>Data</th><th>Tipo</th><th>Valor</th><th>Descrição</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Tipo</th>
+                <th>Valor</th>
+                <th>Descrição</th>
+              </tr>
+            </thead>
             <tbody>${movimentosHtml}</tbody>
           </table>
 
@@ -1470,12 +1531,18 @@
 
       document.querySelector("#statusRelatorio").textContent =
         "Relatório carregado. Confira os valores antes de imprimir.";
+
       document.querySelector("#imprimirRelatorio").disabled = false;
       document.querySelector("#imprimirRelatorio").onclick = () => window.print();
+
     } catch (e) {
       erro("Não foi possível gerar o relatório do caixa.", e);
+
       const status = document.querySelector("#statusRelatorio");
-      if (status) status.textContent = "Falha ao carregar o relatório. Confira as permissões e os dados das tabelas.";
+      if (status) {
+        status.textContent =
+          "Falha ao carregar o relatório. Confira as permissões e os dados das tabelas.";
+      }
     }
   }
 
@@ -1774,7 +1841,7 @@
     }
 
     try {
-      const { data, error: e } = await supabase.rpc("adicionar_item_pedido", {
+      const { error: e } = await supabase.rpc("adicionar_item_pedido", {
         p_pedido_id: pedidoAtual.id,
         p_produto_id: produtoId,
         p_quantidade: quantidade,
