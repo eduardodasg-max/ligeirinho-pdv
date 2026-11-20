@@ -321,7 +321,6 @@
       ` : ""}
       ${temPermissao("administrador", "caixa") ? `
         <button id="caixa">Controle de caixa</button>
-        <button id="contas">Contas aguardando pagamento</button>
       ` : ""}
       <button id="atualizar">Atualizar</button>
       <button id="sair">Sair</button>
@@ -339,7 +338,6 @@
 
     if (temPermissao("administrador", "caixa")) {
       document.querySelector("#caixa").onclick = mostrarCaixa;
-      document.querySelector("#contas").onclick = carregarContasAguardando;
     }
 
     atualizarAvisosEstoque();
@@ -2104,68 +2102,6 @@
     }
   }
 
-  async function carregarContasAguardando() {
-    if (!exigirCaixa()) return;
-
-    limpar();
-    painel.innerHTML = `
-      <h2>Contas aguardando pagamento</h2>
-      <button id="atualizarContas">Atualizar</button>
-      <button id="voltarContas">Voltar</button>
-      <div id="listaContas">Carregando...</div>
-    `;
-
-    document.querySelector("#atualizarContas").onclick = carregarContasAguardando;
-    document.querySelector("#voltarContas").onclick = mostrarInicio;
-
-    try {
-      const { data, error: e } = await supabase.rpc("listar_contas_aguardando_pagamento");
-
-      if (e) throw e;
-
-      const lista = document.querySelector("#listaContas");
-      lista.innerHTML = "";
-
-      if (!data?.length) {
-        lista.textContent = "Nenhuma conta aguardando pagamento.";
-        return;
-      }
-
-      data.forEach(conta => {
-        const item = document.createElement("div");
-        item.className = "item-pedido";
-        item.innerHTML = `
-          <strong>Mesa ${escapar(conta.numero_mesa ?? conta.mesa_numero ?? "—")}</strong>
-          <p>Total: ${dinheiro(conta.valor_total)}</p>
-          <p>Pedido: ${escapar(conta.pedido_id || conta.id || "—")}</p>
-        `;
-
-        const botao = document.createElement("button");
-        botao.textContent = "Abrir conta";
-        botao.onclick = async () => {
-          const id = conta.pedido_id || conta.id;
-          const { data: pedido, error: erroPedido } = await supabase.from("pedidos")
-            .select("*")
-            .eq("id", id)
-            .single();
-
-          if (erroPedido) {
-            erro("Não foi possível abrir a conta.", erroPedido);
-            return;
-          }
-
-          pedidoAtual = pedido;
-          await mostrarPedido();
-        };
-
-        item.appendChild(botao);
-        lista.appendChild(item);
-      });
-    } catch (e) {
-      erro("Não foi possível carregar as contas aguardando pagamento.", e);
-    }
-  }
-
   async function registrarPagamento(pedido) {
     if (!temPermissao("administrador", "caixa")) {
       mensagem("Somente caixa ou administrador pode registrar pagamentos.");
@@ -2215,7 +2151,7 @@
         await carregarMesas();
         await carregarProdutos();
         mensagem("Pagamento registrado com sucesso.");
-        await carregarContasAguardando();
+        mostrarMesas();
       } catch (e) {
         erro("Não foi possível registrar o pagamento.", e);
       }
