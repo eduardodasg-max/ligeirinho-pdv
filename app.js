@@ -1712,8 +1712,20 @@
       });
     }
 
+    const valorConsumo = Number(pedido.valor_consumo ?? pedido.valor_total ?? 0);
+    const valorDesconto = Number(pedido.valor_desconto || 0);
+    const taxaPercentual = Number(pedido.taxa_servico_percentual ?? 15);
+    const valorTaxa = Number(pedido.valor_taxa_servico || 0);
     const valorTotal = Number(pedido.valor_total || 0);
-    total.innerHTML = `<h3>Total: ${dinheiro(valorTotal)}</h3>`;
+
+    total.innerHTML = `
+      <div class="resumo-financeiro">
+        <p>Consumo: <strong>${dinheiro(valorConsumo)}</strong></p>
+        <p>Desconto (${pedido.tipo_desconto === "fixo" ? "valor fixo" : "percentual"}): <strong>- ${dinheiro(valorDesconto)}</strong></p>
+        <p>Taxa de serviço (${escapar(taxaPercentual)}%): <strong>${dinheiro(valorTaxa)}</strong></p>
+        <h3>Total da conta: ${dinheiro(valorTotal)}</h3>
+      </div>
+    `;
 
     acoes.innerHTML = "";
 
@@ -1738,6 +1750,11 @@
 
     if (pedido.status === "aguardando_pagamento") {
       if (temPermissao("administrador", "caixa")) {
+        const condicoes = document.createElement("button");
+        condicoes.textContent = "Editar taxa e desconto";
+        condicoes.onclick = () => formularioCondicoesConta(pedido);
+        acoes.appendChild(condicoes);
+
         const imprimir = document.createElement("button");
         imprimir.textContent = "Imprimir conta";
         imprimir.onclick = () => imprimirContaAtual(pedido);
@@ -1753,6 +1770,93 @@
         acoes.appendChild(aviso);
       }
     }
+  }
+
+  // EDIÇÃO DA TAXA DE SERVIÇO E DO DESCONTO
+  // Somente administrador e caixa podem alterar os valores da conta.
+
+  function formularioCondicoesConta(pedido) {
+    if (!temPermissao("administrador", "caixa")) {
+      mensagem("Somente caixa ou administrador pode alterar a taxa e o desconto.");
+      return;
+    }
+
+    if (!pedido?.id) {
+      mensagem("Não foi possível identificar a conta.");
+      return;
+    }
+
+    const taxaAtual = Number(pedido.taxa_servico_percentual ?? 15);
+    const tipoAtual = pedido.tipo_desconto || "percentual";
+    const descontoAtual = Number(pedido.desconto_valor || 0);
+
+    const area = document.querySelector("#acoesPedido");
+    if (!area) return;
+
+    area.innerHTML = `
+      <h3>Taxa de serviço e desconto</h3>
+      <p>A taxa padrão é de 15%. O desconto é aplicado antes da taxa.</p>
+
+      <label for="taxaServicoConta">Taxa de serviço (%)</label>
+      <input id="taxaServicoConta" type="number" min="0" max="100" step="0.01" value="${taxaAtual}">
+
+      <label for="tipoDescontoConta">Tipo de desconto</label>
+      <select id="tipoDescontoConta">
+        <option value="percentual" ${tipoAtual === "percentual" ? "selected" : ""}>Percentual (%)</option>
+        <option value="fixo" ${tipoAtual === "fixo" ? "selected" : ""}>Valor fixo (R$)</option>
+      </select>
+
+      <label for="valorDescontoConta">Desconto</label>
+      <input id="valorDescontoConta" type="number" min="0" step="0.01" value="${descontoAtual}">
+
+      <button id="salvarCondicoesConta">Salvar alterações</button>
+      <button id="cancelarCondicoesConta">Cancelar</button>
+    `;
+
+    document.querySelector("#cancelarCondicoesConta").onclick = atualizarPedidoAtual;
+
+    document.querySelector("#salvarCondicoesConta").onclick = async () => {
+      const taxa = Number(document.querySelector("#taxaServicoConta").value);
+      const tipo = document.querySelector("#tipoDescontoConta").value;
+      const desconto = Number(document.querySelector("#valorDescontoConta").value);
+
+      if (!Number.isFinite(taxa) || taxa < 0 || taxa > 100) {
+        mensagem("Informe uma taxa entre 0 e 100%.");
+        return;
+      }
+
+      if (!Number.isFinite(desconto) || desconto < 0) {
+        mensagem("Informe um desconto válido.");
+        return;
+      }
+
+      if (tipo === "percentual" && desconto > 100) {
+        mensagem("O desconto percentual não pode ultrapassar 100%.");
+        return;
+      }
+
+      const botao = document.querySelector("#salvarCondicoesConta");
+      botao.disabled = true;
+      botao.textContent = "Salvando...";
+
+      try {
+        const { error: e } = await supabase.rpc("atualizar_condicoes_conta", {
+          p_pedido_id: pedido.id,
+          p_taxa_servico_percentual: taxa,
+          p_tipo_desconto: tipo,
+          p_desconto_valor: desconto
+        });
+
+        if (e) throw e;
+
+        await atualizarPedidoAtual();
+        mensagem("Taxa e desconto atualizados com sucesso.");
+      } catch (e) {
+        botao.disabled = false;
+        botao.textContent = "Salvar alterações";
+        erro("Não foi possível atualizar a taxa e o desconto.", e);
+      }
+    };
   }
 
   // IMPRESSÃO DA CONTA DA MESA
