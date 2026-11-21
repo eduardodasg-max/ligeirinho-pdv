@@ -93,6 +93,18 @@
       .legenda-ocupada{background:#fdeaea;color:#a32323}
       .legenda-aguardando{background:#fff2cc;color:#765000}
       .item-pedido{padding:10px;margin:8px 0;border:1px solid #d6e0e8;border-radius:8px;background:#f8fbfd}
+      .categorias-pedido,.produtos-categoria-pedido{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:9px;margin:10px 0}
+      .categorias-pedido .categoria-card-pedido{min-height:82px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;background:#174f82;border:2px solid #d5e3ef;font-size:15px}
+      .categorias-pedido .categoria-card-pedido span{font-size:24px}
+      .categorias-pedido .categoria-ativa-pedido{background:#0d3558;border-color:#e0ad2b;box-shadow:0 0 0 2px #e0ad2b}
+      .produtos-categoria-pedido .produto-card-pedido{min-height:88px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#f0f6fb;color:#17324d;border:1px solid #b9c9d8;text-align:center}
+      .produtos-categoria-pedido .produto-card-pedido small{font-weight:400}
+      .produtos-categoria-pedido .produto-card-pedido span,.resultado-produto-pedido span{font-weight:700}
+      .produtos-categoria-pedido .produto-selecionado-pedido{border:2px solid #23864b;background:#e2f5e8}
+      #resultadosProdutosPedido .resultado-produto-pedido{display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;text-align:left;background:#f0f6fb;color:#17324d;border:1px solid #b9c9d8;margin:5px 0}
+      #confirmarItem:disabled{opacity:.45;cursor:not-allowed}
+      @media(max-width:600px){.categorias-pedido,.produtos-categoria-pedido{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
       .painel button#sair{background:#b83232}
       .relatorio-caixa{background:#fff;color:#17324d;padding:18px;border:1px solid #d6e0e8;border-radius:10px;margin:12px 0}
       .relatorio-caixa table{width:100%;border-collapse:collapse;margin:10px 0}
@@ -730,9 +742,11 @@
     limpar();
 
     const categorias = [
-      { valor: "comida", rotulo: "Comida" },
-      { valor: "bebida", rotulo: "Bebida" },
+      { valor: "comida", rotulo: "Comidas" },
+      { valor: "almoco", rotulo: "Almoço" },
       { valor: "petiscos", rotulo: "Petiscos" },
+      { valor: "cervejas", rotulo: "Cervejas" },
+      { valor: "bebida", rotulo: "Bebidas" },
       { valor: "drinks", rotulo: "Drinks" },
       { valor: "bebidas sem álcool", rotulo: "Bebidas sem álcool" }
     ];
@@ -799,7 +813,7 @@
       return;
     }
 
-    if (!["comida", "bebida", "petiscos", "drinks", "bebidas sem álcool"].includes(registro.categoria)) {
+    if (!["comida", "almoco", "bebida", "cervejas", "petiscos", "drinks", "bebidas sem álcool"].includes(registro.categoria)) {
       aviso.textContent = "Selecione uma categoria válida.";
       return;
     }
@@ -2001,44 +2015,136 @@
     }
 
     const ativos = produtos.filter(p => p.ativo);
-
     if (!ativos.length) {
       mensagem("Não há produtos ativos cadastrados.");
       return;
     }
 
     const area = document.querySelector("#acoesPedido");
+    if (!area) return;
 
-    area.innerHTML = `
-      <h3>Adicionar produto</h3>
-      <label for="buscaProdutoPedido">Produto</label>
-      <input id="buscaProdutoPedido" type="search" placeholder="Digite o nome ou código do produto" autocomplete="off">
-      <div id="resultadosProdutosPedido" role="listbox" aria-label="Produtos encontrados"></div>
-      <p id="produtoSelecionadoPedido">Nenhum produto selecionado.</p>
-      <input id="produtoPedido" type="hidden" value="">
-      <label>Quantidade</label>
-      <input id="quantidadePedido" type="number" min="0.001" step="0.001" value="1">
-      <label>Observação</label>
-      <textarea id="observacaoPedido" rows="2"></textarea>
-      <button id="confirmarItem">Adicionar</button>
-      <button id="cancelarItem">Cancelar</button>
-    `;
+    area.innerHTML =
+      "<h3>Cardápio — adicionar produto</h3>" +
+      "<label for=\"buscaProdutoPedido\">Pesquisar produto por nome ou código</label>" +
+      "<input id=\"buscaProdutoPedido\" type=\"search\" placeholder=\"Comece a digitar o nome ou código...\" autocomplete=\"off\" style=\"width:100%;\">" +
+      "<div id=\"resultadosProdutosPedido\"></div>" +
+      "<h3>Categorias</h3>" +
+      "<div id=\"categoriasPedido\" class=\"categorias-pedido\"></div>" +
+      "<div id=\"tituloCategoriaPedido\"></div>" +
+      "<div id=\"produtosCategoriaPedido\" class=\"produtos-categoria-pedido\"></div>" +
+      "<div class=\"item-pedido\" id=\"selecaoProdutoPedido\">" +
+        "<p id=\"produtoSelecionadoPedido\">Selecione um produto no cardápio.</p>" +
+        "<input id=\"produtoPedido\" type=\"hidden\" value=\"\">" +
+        "<label for=\"quantidadePedido\">Quantidade</label>" +
+        "<input id=\"quantidadePedido\" type=\"number\" min=\"0.001\" step=\"0.001\" value=\"1\">" +
+        "<label for=\"observacaoPedido\">Observação</label>" +
+        "<textarea id=\"observacaoPedido\" rows=\"2\" style=\"width:100%;\"></textarea>" +
+        "<button id=\"confirmarItem\" disabled>Adicionar ao pedido</button>" +
+      "</div>" +
+      "<button id=\"cancelarItem\">Voltar ao pedido</button>";
 
-    const campoBusca = document.querySelector("#buscaProdutoPedido");
-    const resultados = document.querySelector("#resultadosProdutosPedido");
-    const campoProduto = document.querySelector("#produtoPedido");
-    const produtoSelecionado = document.querySelector("#produtoSelecionadoPedido");
+    const categorias = [
+      { id: "petiscos", nome: "Petiscos", icone: "🍟" },
+      { id: "cervejas", nome: "Cervejas", icone: "🍺" },
+      { id: "bebida", nome: "Bebidas", icone: "🥤" },
+      { id: "comida", nome: "Comidas", icone: "🍽️" },
+      { id: "almoco", nome: "Almoço", icone: "🍛" },
+      { id: "drinks", nome: "Drinks", icone: "🍹" },
+      { id: "bebidas sem álcool", nome: "Bebidas sem álcool", icone: "🧃" }
+    ];
 
     const normalizar = valor => String(valor || "")
       .toLocaleLowerCase("pt-BR")
       .normalize("NFD")
-      .replace(/[\\u0300-\\u036f]/g, "")
+      .replace(/[\u0300-\u036f]/g, "")
       .trim();
+
+    const categoriaProduto = produto => {
+      const categoria = normalizar(produto.categoria);
+      if (categoria.includes("petisco")) return "petiscos";
+      if (categoria.includes("cerveja")) return "cervejas";
+      if (categoria.includes("almoco")) return "almoco";
+      if (categoria.includes("drink")) return "drinks";
+      if (categoria.includes("sem alcool")) return "bebidas sem álcool";
+      if (categoria === "comida" || categoria === "comidas") return "comida";
+      if (categoria === "bebida" || categoria === "bebidas") return "bebida";
+      return categoria;
+    };
+
+    const campoBusca = document.querySelector("#buscaProdutoPedido");
+    const resultados = document.querySelector("#resultadosProdutosPedido");
+    const gradeCategorias = document.querySelector("#categoriasPedido");
+    const tituloCategoria = document.querySelector("#tituloCategoriaPedido");
+    const gradeProdutos = document.querySelector("#produtosCategoriaPedido");
+    const campoProduto = document.querySelector("#produtoPedido");
+    const produtoSelecionado = document.querySelector("#produtoSelecionadoPedido");
+    const botaoAdicionar = document.querySelector("#confirmarItem");
+
+    const selecionarProduto = produto => {
+      campoProduto.value = produto.id;
+      produtoSelecionado.textContent = "Selecionado: " + produto.nome + " — " + dinheiro(produto.preco_venda);
+      botaoAdicionar.disabled = false;
+      resultados.innerHTML = "";
+      gradeProdutos.querySelectorAll(".produto-card-pedido").forEach(b => {
+        b.classList.toggle("produto-selecionado-pedido", b.dataset.produtoId === produto.id);
+      });
+    };
+
+    const desenharProdutos = lista => {
+      if (!lista.length) {
+        gradeProdutos.innerHTML = "<p>Nenhum produto ativo nesta categoria.</p>";
+        return;
+      }
+
+      gradeProdutos.innerHTML = lista.map(p =>
+        "<button type=\"button\" class=\"produto-card-pedido\" data-produto-id=\"" + escapar(p.id) + "\">" +
+          "<strong>" + escapar(p.nome) + "</strong>" +
+          (p.codigo ? "<small>Código: " + escapar(p.codigo) + "</small>" : "") +
+          "<span>" + dinheiro(p.preco_venda) + "</span>" +
+        "</button>"
+      ).join("");
+
+      gradeProdutos.querySelectorAll("[data-produto-id]").forEach(botao => {
+        botao.onclick = () => {
+          const produto = ativos.find(p => p.id === botao.dataset.produtoId);
+          if (produto) selecionarProduto(produto);
+        };
+      });
+    };
+
+    gradeCategorias.innerHTML = categorias.map(c =>
+      "<button type=\"button\" class=\"categoria-card-pedido\" data-categoria=\"" + escapar(c.id) + "\">" +
+        "<span>" + c.icone + "</span><strong>" + escapar(c.nome) + "</strong>" +
+      "</button>"
+    ).join("");
+
+    gradeCategorias.querySelectorAll("[data-categoria]").forEach(botao => {
+      botao.onclick = () => {
+        const categoriaAtiva = botao.dataset.categoria;
+        campoBusca.value = "";
+        campoProduto.value = "";
+        botaoAdicionar.disabled = true;
+        produtoSelecionado.textContent = "Selecione um produto no cardápio.";
+        resultados.innerHTML = "";
+        gradeCategorias.querySelectorAll(".categoria-card-pedido").forEach(b => {
+          b.classList.toggle("categoria-ativa-pedido", b === botao);
+        });
+        const categoria = categorias.find(c => c.id === categoriaAtiva);
+        tituloCategoria.textContent = categoria ? categoria.nome : "Produtos";
+        desenharProdutos(ativos.filter(p => categoriaProduto(p) === categoriaAtiva));
+      };
+    });
 
     campoBusca.oninput = () => {
       const termo = normalizar(campoBusca.value);
       campoProduto.value = "";
-      produtoSelecionado.textContent = "Nenhum produto selecionado.";
+      botaoAdicionar.disabled = true;
+      produtoSelecionado.textContent = "Selecione um produto no cardápio.";
+      tituloCategoria.textContent = "";
+      gradeProdutos.innerHTML = "";
+      gradeCategorias.querySelectorAll(".categoria-card-pedido").forEach(b => {
+        b.classList.remove("categoria-ativa-pedido");
+      });
 
       if (!termo) {
         resultados.innerHTML = "";
@@ -2050,27 +2156,19 @@
         normalizar(p.codigo).includes(termo)
       ).slice(0, 30);
 
-      if (!encontrados.length) {
-        resultados.innerHTML = '<p>Nenhum produto encontrado.</p>';
-        return;
-      }
-
-      resultados.innerHTML = encontrados.map(p => `
-        <button type="button" class="resultado-produto-pedido" data-produto-id="${escapar(p.id)}"
-          style="display:block;width:100%;text-align:left;margin:5px 0;padding:12px;background:#f0f6fb;color:#17324d;border:1px solid #b9c9d8;">
-          <strong>${p.codigo ? escapar(p.codigo) + " — " : ""}${escapar(p.nome)}</strong>
-          <span style="float:right;font-weight:700;">${dinheiro(p.preco_venda)}</span>
-        </button>
-      `).join("");
+      resultados.innerHTML = encontrados.length
+        ? encontrados.map(p =>
+            "<button type=\"button\" class=\"resultado-produto-pedido\" data-produto-id=\"" + escapar(p.id) + "\">" +
+              "<strong>" + (p.codigo ? escapar(p.codigo) + " — " : "") + escapar(p.nome) + "</strong>" +
+              "<span>" + dinheiro(p.preco_venda) + "</span>" +
+            "</button>"
+          ).join("")
+        : "<p>Nenhum produto encontrado.</p>";
 
       resultados.querySelectorAll("[data-produto-id]").forEach(botao => {
         botao.onclick = () => {
           const produto = ativos.find(p => p.id === botao.dataset.produtoId);
-          if (!produto) return;
-          campoProduto.value = produto.id;
-          campoBusca.value = produto.nome;
-          produtoSelecionado.textContent = "Selecionado: " + produto.nome + " — " + dinheiro(produto.preco_venda);
-          resultados.innerHTML = "";
+          if (produto) selecionarProduto(produto);
         };
       });
     };
