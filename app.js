@@ -460,7 +460,23 @@
       document.querySelector("#funcSenha").value = "";
       await carregarFuncionarios();
     } catch (e) {
-      aviso.textContent = "Não foi possível cadastrar: " + (e.message || e);
+      let detalhe = "";
+      if (e?.context && typeof e.context.clone === "function") {
+        try {
+          const respostaTexto = await e.context.clone().text();
+          if (respostaTexto) {
+            try {
+              const respostaJson = JSON.parse(respostaTexto);
+              detalhe = respostaJson.erro || respostaJson.message || respostaTexto;
+            } catch {
+              detalhe = respostaTexto;
+            }
+          }
+        } catch (_) {}
+      }
+      const status = e?.context?.status ? " (HTTP " + e.context.status + ")" : "";
+      aviso.textContent = "Não foi possível cadastrar" + status + ": " +
+        (detalhe || e.message || e);
     } finally {
       if (document.querySelector("#salvarFuncionario")) {
         botao.disabled = false;
