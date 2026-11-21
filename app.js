@@ -365,14 +365,19 @@
       <h2>Cadastro de funcionários</h2>
       <p>Somente o administrador pode cadastrar funcionários.</p>
       <div class="item-pedido">
-        <h3>Novo garçom</h3>
+        <h3>Novo funcionário</h3>
+        <label>Tipo de acesso</label>
+        <select id="funcFuncao">
+          <option value="garcom">Garçom</option>
+          <option value="cozinha">Cozinha</option>
+        </select>
         <label>Nome</label>
-        <input id="funcNome" type="text" autocomplete="name" placeholder="Nome do garçom">
+        <input id="funcNome" type="text" autocomplete="name" placeholder="Nome do funcionário">
         <label>E-mail de acesso</label>
         <input id="funcEmail" type="email" autocomplete="email" placeholder="email@exemplo.com">
         <label>Senha inicial</label>
         <input id="funcSenha" type="password" autocomplete="new-password" minlength="8" placeholder="Mínimo de 8 caracteres">
-        <button id="salvarFuncionario">Cadastrar garçom</button>
+        <button id="salvarFuncionario">Cadastrar funcionário</button>
         <p id="avisoFuncionario" role="status"></p>
       </div>
       <h3>Funcionários cadastrados</h3>
@@ -420,6 +425,7 @@
     const nome = document.querySelector("#funcNome")?.value.trim();
     const email = document.querySelector("#funcEmail")?.value.trim().toLowerCase();
     const senha = document.querySelector("#funcSenha")?.value || "";
+    const funcao = document.querySelector("#funcFuncao")?.value || "garcom";
     const aviso = document.querySelector("#avisoFuncionario");
     const botao = document.querySelector("#salvarFuncionario");
 
@@ -443,12 +449,12 @@
     try {
       const { data, error: e } = await supabase.functions.invoke(
         "gerenciar-funcionarios",
-        { body: { acao: "criar", nome, email, senha } }
+        { body: { acao: "criar", nome, email, senha, funcao } }
       );
       if (e) throw e;
       if (!data?.sucesso) throw new Error(data?.erro || "Falha ao cadastrar funcionário.");
 
-      mensagem("Garçom cadastrado com sucesso. Ele já pode entrar com o e-mail e a senha informados.");
+      mensagem((funcao === "cozinha" ? "Funcionário da cozinha" : "Garçom") + " cadastrado com sucesso. Ele já pode entrar com o e-mail e a senha informados.");
       document.querySelector("#funcNome").value = "";
       document.querySelector("#funcEmail").value = "";
       document.querySelector("#funcSenha").value = "";
@@ -458,7 +464,7 @@
     } finally {
       if (document.querySelector("#salvarFuncionario")) {
         botao.disabled = false;
-        botao.textContent = "Cadastrar garçom";
+        botao.textContent = "Cadastrar funcionário";
       }
     }
   }
