@@ -22,6 +22,8 @@
   let pedidoAtual = null;
   let mesaSelecionada = null;
   let canalRealtime = null;
+  let intervaloCozinha = null;
+  let carregandoFilaCozinha = false;
   let aguardandoRedefinicao = false;
 
   const dinheiro = valor => Number(valor || 0).toLocaleString("pt-BR", {
@@ -383,15 +385,22 @@
 
     document.querySelector("#atualizarCozinha").onclick = carregarFilaCozinha;
     document.querySelector("#sair").onclick = sair;
+    if (intervaloCozinha) clearInterval(intervaloCozinha);
     await carregarFilaCozinha();
+    intervaloCozinha = setInterval(() => {
+      if (temPermissao("cozinha") && document.querySelector("#filaCozinha")) {
+        carregarFilaCozinha();
+      }
+    }, 2000);
   }
 
   async function carregarFilaCozinha() {
-    if (!temPermissao("cozinha")) return;
+    if (!temPermissao("cozinha") || carregandoFilaCozinha) return;
     const lista = document.querySelector("#filaCozinha");
     const resumo = document.querySelector("#resumoCozinha");
     if (!lista || !resumo) return;
 
+    carregandoFilaCozinha = true;
     try {
       const { data, error: e } = await supabase.rpc("listar_fila_producao");
       if (e) throw e;
@@ -446,6 +455,8 @@
     } catch (e) {
       resumo.textContent = "Não foi possível carregar a fila da cozinha: " + (e.message || e);
       lista.innerHTML = "";
+    } finally {
+      carregandoFilaCozinha = false;
     }
   }
 
@@ -633,6 +644,10 @@
   }
 
   async function sair() {
+    if (intervaloCozinha) {
+      clearInterval(intervaloCozinha);
+      intervaloCozinha = null;
+    }
     if (canalRealtime) {
       await supabase.removeChannel(canalRealtime);
       canalRealtime = null;
