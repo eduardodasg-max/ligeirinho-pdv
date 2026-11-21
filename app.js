@@ -2011,17 +2011,11 @@
 
     area.innerHTML = `
       <h3>Adicionar produto</h3>
-      <label for="buscaProdutoPedido">Buscar produto por código ou nome</label>
-      <input id="buscaProdutoPedido" type="search" placeholder="Digite o código ou o nome do produto" autocomplete="off">
-      <label for="produtoPedido">Produtos encontrados</label>
-      <select id="produtoPedido">
-        <option value="">Selecione um produto</option>
-        ${ativos.map(p => {
-          const codigo = p.codigo ? escapar(p.codigo) + " — " : "";
-          return `<option value="${p.id}">${codigo}${escapar(p.nome)} — ${dinheiro(p.preco_venda)}</option>`;
-        }).join("")}
-      </select>
-      <p id="resultadoBuscaProduto" aria-live="polite">${ativos.length} produto(s) disponível(is).</p>
+      <label for="buscaProdutoPedido">Produto</label>
+      <input id="buscaProdutoPedido" type="search" placeholder="Digite o nome ou código do produto" autocomplete="off">
+      <div id="resultadosProdutosPedido" role="listbox" aria-label="Produtos encontrados"></div>
+      <p id="produtoSelecionadoPedido">Nenhum produto selecionado.</p>
+      <input id="produtoPedido" type="hidden" value="">
       <label>Quantidade</label>
       <input id="quantidadePedido" type="number" min="0.001" step="0.001" value="1">
       <label>Observação</label>
@@ -2031,41 +2025,59 @@
     `;
 
     const campoBusca = document.querySelector("#buscaProdutoPedido");
-    const seletor = document.querySelector("#produtoPedido");
-    const resultadoBusca = document.querySelector("#resultadoBuscaProduto");
+    const resultados = document.querySelector("#resultadosProdutosPedido");
+    const campoProduto = document.querySelector("#produtoPedido");
+    const produtoSelecionado = document.querySelector("#produtoSelecionadoPedido");
+
+    const normalizar = valor => String(valor || "")
+      .toLocaleLowerCase("pt-BR")
+      .normalize("NFD")
+      .replace(/[\\u0300-\\u036f]/g, "")
+      .trim();
 
     campoBusca.oninput = () => {
-      const termo = campoBusca.value.trim().toLocaleLowerCase("pt-BR");
-      const termoNormalizado = termo.normalize("NFD").replace(/[\\u0300-\\u036f]/g, "");
-      const filtrados = ativos.filter(p => {
-        const nome = String(p.nome || "").toLocaleLowerCase("pt-BR")
-          .normalize("NFD").replace(/[\\u0300-\\u036f]/g, "");
-        const codigo = String(p.codigo || "").toLocaleLowerCase("pt-BR");
-        return !termo ||
-          nome.includes(termoNormalizado) ||
-          codigo.includes(termo);
-      });
+      const termo = normalizar(campoBusca.value);
+      campoProduto.value = "";
+      produtoSelecionado.textContent = "Nenhum produto selecionado.";
 
-      const selecionado = seletor.value;
-      seletor.innerHTML = `
-        <option value="">${filtrados.length ? "Selecione um produto" : "Nenhum produto encontrado"}</option>
-        ${filtrados.map(p => {
-          const codigo = p.codigo ? escapar(p.codigo) + " — " : "";
-          return `<option value="${p.id}">${codigo}${escapar(p.nome)} — ${dinheiro(p.preco_venda)}</option>`;
-        }).join("")}
-      `;
-
-      if (filtrados.some(p => p.id === selecionado)) {
-        seletor.value = selecionado;
+      if (!termo) {
+        resultados.innerHTML = "";
+        return;
       }
 
-      resultadoBusca.textContent = filtrados.length
-        ? filtrados.length + " produto(s) encontrado(s)."
-        : "Nenhum produto encontrado. Confira o código ou o nome.";
+      const encontrados = ativos.filter(p =>
+        normalizar(p.nome).includes(termo) ||
+        normalizar(p.codigo).includes(termo)
+      ).slice(0, 30);
+
+      if (!encontrados.length) {
+        resultados.innerHTML = '<p>Nenhum produto encontrado.</p>';
+        return;
+      }
+
+      resultados.innerHTML = encontrados.map(p => `
+        <button type="button" class="resultado-produto-pedido" data-produto-id="${escapar(p.id)}"
+          style="display:block;width:100%;text-align:left;margin:5px 0;padding:12px;background:#f0f6fb;color:#17324d;border:1px solid #b9c9d8;">
+          <strong>${p.codigo ? escapar(p.codigo) + " — " : ""}${escapar(p.nome)}</strong>
+          <span style="float:right;font-weight:700;">${dinheiro(p.preco_venda)}</span>
+        </button>
+      `).join("");
+
+      resultados.querySelectorAll("[data-produto-id]").forEach(botao => {
+        botao.onclick = () => {
+          const produto = ativos.find(p => p.id === botao.dataset.produtoId);
+          if (!produto) return;
+          campoProduto.value = produto.id;
+          campoBusca.value = produto.nome;
+          produtoSelecionado.textContent = "Selecionado: " + produto.nome + " — " + dinheiro(produto.preco_venda);
+          resultados.innerHTML = "";
+        };
+      });
     };
 
     document.querySelector("#confirmarItem").onclick = adicionarItemPedido;
     document.querySelector("#cancelarItem").onclick = atualizarPedidoAtual;
+    campoBusca.focus();
   }
 
   async function adicionarItemPedido() {
