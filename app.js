@@ -1592,7 +1592,7 @@
   }
 
   async function mostrarPedido() {
-    if (!pedidoAtual?.id) return;
+    if (!pedidoAtual?.id && !mesaSelecionada?.id) return;
 
     limpar();
 
