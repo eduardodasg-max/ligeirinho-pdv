@@ -2050,7 +2050,7 @@
       { id: "comida", nome: "Comidas", icone: "🍽️" },
       { id: "almoco", nome: "Almoço", icone: "🍛" },
       { id: "drinks", nome: "Drinks", icone: "🍹" },
-      { id: "bebidas sem álcool", nome: "Bebidas sem álcool", icone: "🧃" }
+      { id: "bebidas sem alcool", nome: "Bebidas sem álcool", icone: "🧃" }
     ];
 
     const normalizar = valor => String(valor || "")
