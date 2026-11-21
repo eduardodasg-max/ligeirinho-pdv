@@ -24,6 +24,9 @@
   let canalRealtime = null;
   let intervaloCozinha = null;
   let carregandoFilaCozinha = false;
+  let itensFilaCozinha = [];
+  let idsItensCozinhaConhecidos = null;
+  let modoImpressaoCozinha = localStorage.getItem("ligeirinho_modo_impressao_cozinha") || "manual";
   let aguardandoRedefinicao = false;
 
   const dinheiro = valor => Number(valor || 0).toLocaleString("pt-BR", {
@@ -114,9 +117,16 @@
       .relatorio-caixa .valor-relatorio{font-weight:700}
       @media print{
         body *{visibility:hidden!important}
-        #relatorioImpressao,#relatorioImpressao *{visibility:visible!important}
-        #relatorioImpressao{position:absolute;left:0;top:0;width:100%;border:0}
-        .botoes-relatorio{display:none!important}
+        #relatorioImpressao,#relatorioImpressao *,
+        #comandaImpressao,#comandaImpressao *{visibility:visible!important}
+        #relatorioImpressao,#comandaImpressao{position:absolute;left:0;top:0;width:100%;border:0}
+        #comandaImpressao{font-family:Arial,sans-serif;color:#000;background:#fff;padding:4mm}
+        #comandaImpressao h2{font-size:16pt;text-align:center;margin:0 0 8px}
+        #comandaImpressao p{margin:4px 0;font-size:10pt}
+        #comandaImpressao table{width:100%;border-collapse:collapse;margin-top:10px}
+        #comandaImpressao th,#comandaImpressao td{padding:5px 2px;border-bottom:1px dashed #555;text-align:left;font-size:10pt}
+        #comandaImpressao .comanda-observacao{font-size:9pt;margin-top:8px}
+        .botoes-relatorio,.controles-cozinha{display:none!important}
       }
       @media(max-width:600px){#gradeMesas{grid-template-columns:repeat(2,minmax(0,1fr))}}
     `;
@@ -377,6 +387,14 @@
     painel.innerHTML = `
       <h2>🍳 Cozinha — Pedidos em produção</h2>
       <p>Os pedidos enviados pelos garçons aparecem aqui automaticamente.</p>
+      <div class="item-pedido controles-cozinha">
+        <label for="modoImpressaoCozinha">Impressão das comandas</label>
+        <select id="modoImpressaoCozinha">
+          <option value="manual" ${modoImpressaoCozinha === "manual" ? "selected" : ""}>Manual — imprimir quando eu clicar</option>
+          <option value="automatico" ${modoImpressaoCozinha === "automatico" ? "selected" : ""}>Automática — imprimir ao receber pedido novo</option>
+        </select>
+        <small>A impressão usa a janela do navegador e a impressora configurada no computador.</small>
+      </div>
       <div id="resumoCozinha" class="item-pedido">Carregando fila...</div>
       <div id="filaCozinha"></div>
       <button id="atualizarCozinha">Atualizar fila</button>
@@ -384,6 +402,13 @@
     `;
 
     document.querySelector("#atualizarCozinha").onclick = carregarFilaCozinha;
+    document.querySelector("#modoImpressaoCozinha").onchange = e => {
+      modoImpressaoCozinha = e.target.value === "automatico" ? "automatico" : "manual";
+      localStorage.setItem("ligeirinho_modo_impressao_cozinha", modoImpressaoCozinha);
+      mensagem(modoImpressaoCozinha === "automatico"
+        ? "Impressão automática ativada. O navegador abrirá a janela de impressão ao receber novos pedidos."
+        : "Impressão manual ativada. Use o botão de imprimir em cada item.");
+    };
     document.querySelector("#sair").onclick = sair;
     if (intervaloCozinha) clearInterval(intervaloCozinha);
     await carregarFilaCozinha();
@@ -406,6 +431,18 @@
       if (e) throw e;
 
       const itens = data || [];
+      const idsAtuais = new Set(itens.map(i => i.item_id).filter(Boolean));
+      let novosItens = [];
+      if (idsItensCozinhaConhecidos === null) {
+        idsItensCozinhaConhecidos = idsAtuais;
+      } else {
+        novosItens = itens.filter(i =>
+          i.item_id && !idsItensCozinhaConhecidos.has(i.item_id) &&
+          (i.status_producao || "enviado") === "enviado"
+        );
+        idsItensCozinhaConhecidos = new Set([...idsItensCozinhaConhecidos, ...idsAtuais]);
+      }
+      itensFilaCozinha = itens;
       const emPreparo = itens.filter(i => i.status_producao === "em preparo").length;
       const enviados = itens.filter(i => i.status_producao === "enviado").length;
       const prontos = itens.filter(i => i.status_producao === "pronto").length;
@@ -440,24 +477,91 @@
             <p><strong>Observação:</strong> ${escapar(item.observacao || "Nenhuma")}</p>
             <p><strong>Enviado:</strong> ${horario ? new Date(horario).toLocaleTimeString("pt-BR", {hour:"2-digit",minute:"2-digit"}) : "—"}</p>
             <p><strong>Status:</strong> <span class="${classe}">${escapar(status.toUpperCase())}</span></p>
+            <button data-imprimir="${escapar(item.pedido_id || item.item_id)}">Imprimir comanda</button>
             ${status === "enviado" ? `<button data-iniciar="${escapar(item.item_id)}">Iniciar preparo</button>` : ""}
             ${status === "em preparo" ? `<button data-pronto="${escapar(item.item_id)}">Marcar como pronto</button>` : ""}
           </div>
         `;
       }).join("");
 
+      lista.querySelectorAll("[data-imprimir]").forEach(botao => {
+        botao.onclick = () => {
+          const pedidoId = botao.dataset.imprimir;
+          const itensPedido = itensFilaCozinha.filter(i =>
+            (i.pedido_id || i.item_id) === pedidoId
+          );
+          imprimirComandaCozinha(itensPedido.length ? itensPedido : itensFilaCozinha.filter(i => i.item_id === pedidoId));
+        };
+      });
       lista.querySelectorAll("[data-iniciar]").forEach(botao => {
         botao.onclick = () => atualizarStatusProducao(botao.dataset.iniciar, "iniciar_preparo_item", "Item iniciado.");
       });
       lista.querySelectorAll("[data-pronto]").forEach(botao => {
         botao.onclick = () => atualizarStatusProducao(botao.dataset.pronto, "finalizar_preparo_item", "Item marcado como pronto.");
       });
+
+      if (modoImpressaoCozinha === "automatico" && novosItens.length) {
+        const pedidosNovos = new Map();
+        novosItens.forEach(item => {
+          const chave = item.pedido_id || item.item_id;
+          if (!pedidosNovos.has(chave)) pedidosNovos.set(chave, []);
+          pedidosNovos.get(chave).push(item);
+        });
+        pedidosNovos.forEach(listaNovos => imprimirComandaCozinha(listaNovos));
+      }
     } catch (e) {
       resumo.textContent = "Não foi possível carregar a fila da cozinha: " + (e.message || e);
       lista.innerHTML = "";
     } finally {
       carregandoFilaCozinha = false;
     }
+  }
+
+  function imprimirComandaCozinha(itens) {
+    if (!Array.isArray(itens) || !itens.length) {
+      mensagem("Não há itens para imprimir nesta comanda.");
+      return;
+    }
+
+    const primeiro = itens[0];
+    const mesa = primeiro.mesa ?? "—";
+    const garcom = primeiro.garcom || "—";
+    const dataHora = new Date().toLocaleString("pt-BR");
+    const linhas = itens.map(item => `
+      <tr>
+        <td>${escapar(item.produto || "Produto")}${item.observacao ? `<div class="comanda-observacao">Obs.: ${escapar(item.observacao)}</div>` : ""}</td>
+        <td style="text-align:right;white-space:nowrap">${escapar(item.quantidade)}</td>
+      </tr>
+    `).join("");
+
+    let area = document.querySelector("#comandaImpressao");
+    if (!area) {
+      area = document.createElement("section");
+      area.id = "comandaImpressao";
+      document.body.appendChild(area);
+    }
+
+    area.innerHTML = `
+      <h2>COMANDA — COZINHA</h2>
+      <p><strong>MESA: ${escapar(mesa)}</strong></p>
+      <p><strong>Garçom:</strong> ${escapar(garcom)}</p>
+      <p><strong>Recebido:</strong> ${escapar(dataHora)}</p>
+      <table>
+        <thead><tr><th>PRODUTO</th><th style="text-align:right">QTD.</th></tr></thead>
+        <tbody>${linhas}</tbody>
+      </table>
+      <p style="text-align:center;margin-top:12px;font-weight:bold">LIGEIRINHO PDV</p>
+    `;
+
+    const limparArea = () => {
+      area?.remove();
+      window.removeEventListener("afterprint", limparArea);
+    };
+    window.addEventListener("afterprint", limparArea, { once: true });
+    window.print();
+    setTimeout(() => {
+      if (document.querySelector("#comandaImpressao")) limparArea();
+    }, 60000);
   }
 
   async function atualizarStatusProducao(itemId, funcao, sucesso) {
