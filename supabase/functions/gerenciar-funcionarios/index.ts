@@ -23,11 +23,17 @@ Deno.serve(async (req: Request) => {
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-  if (!supabaseUrl || !anonKey || !serviceRoleKey) {
-    return responder({ sucesso: false, erro: "Configuração do Supabase incompleta." }, 500);
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error("Configuração ausente:", {
+      SUPABASE_URL: Boolean(supabaseUrl),
+      SUPABASE_SERVICE_ROLE_KEY: Boolean(serviceRoleKey),
+    });
+    return responder({
+      sucesso: false,
+      erro: "Configuração do servidor incompleta. Verifique os segredos da Edge Function.",
+    }, 500);
   }
 
   const authorization = req.headers.get("Authorization");
@@ -36,7 +42,7 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const usuarioClient = createClient(supabaseUrl, anonKey, {
+    const usuarioClient = createClient(supabaseUrl, serviceRoleKey, {
       global: { headers: { Authorization: authorization } },
       auth: { persistSession: false, autoRefreshToken: false },
     });
@@ -126,6 +132,7 @@ Deno.serve(async (req: Request) => {
       },
     });
   } catch (error) {
+    console.error("Erro em gerenciar-funcionarios:", error);
     return responder({
       sucesso: false,
       erro: error instanceof Error ? error.message : "Erro interno ao cadastrar funcionário.",
