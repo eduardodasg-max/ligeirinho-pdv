@@ -300,13 +300,19 @@
       perfilAtual = resultado.data;
 
       if (!perfilAtual?.ativo ||
-          !["administrador", "caixa", "garcom"].includes(perfilAtual.funcao)) {
+          !["administrador", "caixa", "garcom", "cozinha"].includes(perfilAtual.funcao)) {
         throw new Error("Perfil inexistente, inativo ou função inválida.");
+      }
+
+      iniciarRealtime();
+
+      if (perfilAtual.funcao === "cozinha") {
+        mostrarCozinha();
+        return;
       }
 
       await carregarProdutos();
       await carregarMesas();
-      iniciarRealtime();
       mostrarInicio();
     } catch (e) {
       erro("Não foi possível validar seu perfil.", e);
@@ -354,6 +360,147 @@
     }
 
     atualizarAvisosEstoque();
+  }
+
+  // COZINHA — FILA DE PRODUÇÃO
+
+  async function mostrarCozinha() {
+    if (!temPermissao("cozinha")) {
+      mensagem("Apenas a equipe da cozinha pode acessar esta tela.");
+      mostrarInicio();
+      return;
+    }
+
+    limpar();
+    painel.innerHTML = `
+      <h2>🍳 Cozinha — Pedidos em produção</h2>
+      <p>Os pedidos enviados pelos garçons aparecem aqui automaticamente.</p>
+      <div id="resumoCozinha" class="item-pedido">Carregando fila...</div>
+      <div id="filaCozinha"></div>
+      <button id="atualizarCozinha">Atualizar fila</button>
+      <button id="sair">Sair</button>
+    `;
+
+    document.querySelector("#atualizarCozinha").onclick = carregarFilaCozinha;
+    document.querySelector("#sair").onclick = sair;
+    await carregarFilaCozinha();
+  }
+
+  async function carregarFilaCozinha() {
+    if (!temPermissao("cozinha")) return;
+    const lista = document.querySelector("#filaCozinha");
+    const resumo = document.querySelector("#resumoCozinha");
+    if (!lista || !resumo) return;
+
+    try {
+      const { data, error: e } = await supabase.rpc("listar_fila_producao");
+      if (e) throw e;
+
+      const itens = data || [];
+      const emPreparo = itens.filter(i => i.status_producao === "em preparo").length;
+      const enviados = itens.filter(i => i.status_producao === "enviado").length;
+      const prontos = itens.filter(i => i.status_producao === "pronto").length;
+
+      resumo.innerHTML = `
+        <strong>Na fila:</strong> ${enviados} aguardando início
+        &nbsp;|&nbsp; <strong>Em preparo:</strong> ${emPreparo}
+        &nbsp;|&nbsp; <strong>Prontos:</strong> ${prontos}
+      `;
+
+      if (!itens.length) {
+        lista.innerHTML = '<div class="item-pedido"><strong>Nenhum pedido enviado para a cozinha.</strong><p>Quando o garçom enviar um pedido, ele aparecerá aqui.</p></div>';
+        return;
+      }
+
+      const ordem = { "enviado": 0, "em preparo": 1, "pronto": 2 };
+      itens.sort((a, b) =>
+        (ordem[a.status_producao] ?? 9) - (ordem[b.status_producao] ?? 9) ||
+        new Date(a.enviado_em || a.criado_em || 0) - new Date(b.enviado_em || b.criado_em || 0)
+      );
+
+      lista.innerHTML = itens.map(item => {
+        const status = item.status_producao || "enviado";
+        const classe = status === "pronto" ? "legenda-livre" :
+          status === "em preparo" ? "legenda-aguardando" : "legenda-ocupada";
+        const horario = item.enviado_em || item.criado_em;
+        return `
+          <div class="item-pedido">
+            <h3>Mesa ${escapar(item.mesa ?? "—")} — ${escapar(item.produto || "Produto")}</h3>
+            <p><strong>Quantidade:</strong> ${escapar(item.quantidade)}</p>
+            <p><strong>Garçom:</strong> ${escapar(item.garcom || "—")}</p>
+            <p><strong>Observação:</strong> ${escapar(item.observacao || "Nenhuma")}</p>
+            <p><strong>Enviado:</strong> ${horario ? new Date(horario).toLocaleTimeString("pt-BR", {hour:"2-digit",minute:"2-digit"}) : "—"}</p>
+            <p><strong>Status:</strong> <span class="${classe}">${escapar(status.toUpperCase())}</span></p>
+            ${status === "enviado" ? `<button data-iniciar="${escapar(item.item_id)}">Iniciar preparo</button>` : ""}
+            ${status === "em preparo" ? `<button data-pronto="${escapar(item.item_id)}">Marcar como pronto</button>` : ""}
+          </div>
+        `;
+      }).join("");
+
+      lista.querySelectorAll("[data-iniciar]").forEach(botao => {
+        botao.onclick = () => atualizarStatusProducao(botao.dataset.iniciar, "iniciar_preparo_item", "Item iniciado.");
+      });
+      lista.querySelectorAll("[data-pronto]").forEach(botao => {
+        botao.onclick = () => atualizarStatusProducao(botao.dataset.pronto, "finalizar_preparo_item", "Item marcado como pronto.");
+      });
+    } catch (e) {
+      resumo.textContent = "Não foi possível carregar a fila da cozinha: " + (e.message || e);
+      lista.innerHTML = "";
+    }
+  }
+
+  async function atualizarStatusProducao(itemId, funcao, sucesso) {
+    if (!temPermissao("cozinha")) return;
+    try {
+      const { data, error: e } = await supabase.rpc(funcao, { p_item_id: itemId });
+      if (e) throw e;
+      if (data === false) throw new Error("O item não pôde ser atualizado. Atualize a fila e tente novamente.");
+      await carregarFilaCozinha();
+    } catch (e) {
+      erro("Não foi possível atualizar o preparo.", e);
+    }
+  }
+
+  async function enviarPedidoParaCozinha() {
+    if (!temPermissao("administrador", "garcom")) {
+      mensagem("Você não tem permissão para enviar pedidos à cozinha.");
+      return;
+    }
+    if (!pedidoAtual?.id) return;
+
+    try {
+      const { data: itens, error: erroItens } = await supabase
+        .from("itens_pedido")
+        .select("id,status_producao")
+        .eq("pedido_id", pedidoAtual.id);
+
+      if (erroItens) throw erroItens;
+
+      const pendentes = (itens || []).filter(i => !i.status_producao || i.status_producao === "pendente");
+      if (!pendentes.length) {
+        mensagem("Não há itens pendentes para enviar à cozinha.");
+        await atualizarPedidoAtual();
+        return;
+      }
+
+      if (!confirm("Enviar " + pendentes.length + " item(ns) para a cozinha? Depois do envio, eles não poderão ser editados pelo garçom.")) return;
+
+      let enviados = 0;
+      for (const item of pendentes) {
+        const { data, error: e } = await supabase.rpc("enviar_item_producao", {
+          p_item_id: item.id
+        });
+        if (e) throw e;
+        if (data === false) throw new Error("Um item não pôde ser enviado. " + enviados + " item(ns) já foram enviados.");
+        enviados++;
+      }
+
+      await atualizarPedidoAtual();
+      mensagem(enviados + " item(ns) enviado(s) para a cozinha.");
+    } catch (e) {
+      erro("Não foi possível enviar o pedido para a cozinha.", e);
+      await atualizarPedidoAtual();
+    }
   }
 
   // FUNCIONÁRIOS — CADASTRO DE GARÇONS PELO ADMINISTRADOR
@@ -1690,7 +1837,7 @@
     pedidoAtual = pedido;
 
     const { data: itens, error: erroItens } = await supabase.from("itens_pedido")
-      .select("id,pedido_id,produto_id,quantidade,preco_unitario,subtotal,observacao")
+      .select("id,pedido_id,produto_id,quantidade,preco_unitario,subtotal,observacao,status_producao,enviado_em,iniciado_em,pronto_em")
       .eq("pedido_id", pedido.id)
       .order("id");
 
@@ -1742,9 +1889,10 @@
           <p>Valor unitário: ${dinheiro(item.preco_unitario)}</p>
           <p>Subtotal: ${dinheiro(item.subtotal)}</p>
           <p>Observação: ${escapar(item.observacao || "—")}</p>
+          <p><strong>Cozinha:</strong> ${escapar(item.status_producao || "pendente")}</p>
         `;
 
-        if (pedido.status === "aberto") {
+        if (pedido.status === "aberto" && (!item.status_producao || item.status_producao === "pendente")) {
           const remover = document.createElement("button");
           remover.textContent = "Remover item";
           remover.onclick = () => removerItemPedido(item.id);
@@ -1778,6 +1926,14 @@
         adicionar.textContent = "Adicionar produto";
         adicionar.onclick = formularioAdicionarItem;
         acoes.appendChild(adicionar);
+      }
+
+      if (temPermissao("administrador", "garcom") &&
+          itensPedido.some(item => !item.status_producao || item.status_producao === "pendente")) {
+        const enviar = document.createElement("button");
+        enviar.textContent = "Enviar para cozinha";
+        enviar.onclick = enviarPedidoParaCozinha;
+        acoes.appendChild(enviar);
       }
 
       if (temPermissao("administrador", "garcom")) {
@@ -2413,7 +2569,11 @@
         { event: "*", schema: "public", table: "itens_pedido" },
         async () => {
           try {
-            if (pedidoAtual?.id) await atualizarPedidoAtual();
+            if (temPermissao("cozinha") && document.querySelector("#filaCozinha")) {
+              await carregarFilaCozinha();
+            } else if (pedidoAtual?.id) {
+              await atualizarPedidoAtual();
+            }
           } catch (e) {
             console.error("Erro ao atualizar itens:", e);
           }
