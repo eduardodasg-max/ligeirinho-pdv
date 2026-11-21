@@ -20,6 +20,7 @@
   let produtos = [];
   let mesas = [];
   let pedidoAtual = null;
+  let mesaSelecionada = null;
   let canalRealtime = null;
   let aguardandoRedefinicao = false;
 
@@ -1576,36 +1577,18 @@
     }
 
     pedidoAtual = data;
+    mesaSelecionada = mesa;
     await mostrarPedido();
   }
 
   async function abrirMesa(mesa) {
     if (!mesa?.id) return;
 
-    try {
-      const { data, error: e } = await supabase.rpc("abrir_mesa", {
-        p_mesa_id: mesa.id,
-        p_garcom_id: usuarioAtual.id
-      });
-
-      if (e) throw e;
-
-      const pedidoId = typeof data === "string" ? data : data?.id;
-      if (!pedidoId) throw new Error("A abertura da mesa não retornou o pedido.");
-
-      const { data: pedido, error: erroPedido } = await supabase.from("pedidos")
-        .select("*")
-        .eq("id", pedidoId)
-        .single();
-
-      if (erroPedido) throw erroPedido;
-
-      pedidoAtual = pedido;
-      await carregarMesas();
-      await mostrarPedido();
-    } catch (e) {
-      erro("Não foi possível abrir a mesa.", e);
-    }
+    // Selecionar uma mesa livre não cria pedido nem altera seu status.
+    // O pedido será criado junto com o primeiro produto.
+    mesaSelecionada = mesa;
+    pedidoAtual = null;
+    await mostrarPedido();
   }
 
   async function mostrarPedido() {
@@ -1624,6 +1607,7 @@
 
     document.querySelector("#voltarMesas").onclick = async () => {
       pedidoAtual = null;
+      mesaSelecionada = null;
       await carregarMesas();
       mostrarMesas();
     };
@@ -1632,7 +1616,32 @@
   }
 
   async function atualizarPedidoAtual() {
-    if (!pedidoAtual?.id) return;
+    if (!pedidoAtual?.id) {
+      if (!mesaSelecionada?.id) return;
+
+      const dados = document.querySelector("#dadosPedido");
+      const lista = document.querySelector("#listaItensPedido");
+      const total = document.querySelector("#totalPedido");
+      const acoes = document.querySelector("#acoesPedido");
+
+      if (!dados || !lista || !total || !acoes) return;
+
+      dados.innerHTML = `
+        <p><strong>Mesa:</strong> ${escapar(mesaSelecionada.numero ?? "—")}</p>
+        <p><strong>Status:</strong> Livre — aguardando o primeiro produto.</p>
+      `;
+      lista.textContent = "Nenhum produto adicionado ainda.";
+      total.innerHTML = "<p>Consumo: R$ 0,00</p>";
+
+      acoes.innerHTML = "";
+      if (temPermissao("administrador", "garcom")) {
+        const adicionar = document.createElement("button");
+        adicionar.textContent = "Adicionar primeiro produto";
+        adicionar.onclick = formularioAdicionarItem;
+        acoes.appendChild(adicionar);
+      }
+      return;
+    }
 
     const { data: pedido, error: erroPedido } = await supabase.from("pedidos")
       .select("*")
@@ -1667,7 +1676,7 @@
       });
     }
 
-    const mesa = mesas.find(m => m.id === pedido.mesa_id);
+    const mesa = mesas.find(m => m.id === pedido.mesa_id) || mesaSelecionada;
     const dados = document.querySelector("#dadosPedido");
     const lista = document.querySelector("#listaItensPedido");
     const total = document.querySelector("#totalPedido");
@@ -2035,14 +2044,46 @@
     }
 
     try {
-      const { error: e } = await supabase.rpc("adicionar_item_pedido", {
-        p_pedido_id: pedidoAtual.id,
-        p_produto_id: produtoId,
-        p_quantidade: quantidade,
-        p_observacao: observacao || null
-      });
+      if (!pedidoAtual?.id) {
+        if (!mesaSelecionada?.id) {
+          throw new Error("Selecione uma mesa antes de adicionar o primeiro produto.");
+        }
 
-      if (e) throw e;
+        const { data: pedidoId, error: erroPrimeiroItem } = await supabase.rpc(
+          "adicionar_primeiro_item_mesa",
+          {
+            p_mesa_id: mesaSelecionada.id,
+            p_produto_id: produtoId,
+            p_quantidade: quantidade,
+            p_observacao: observacao || null
+          }
+        );
+
+        if (erroPrimeiroItem) throw erroPrimeiroItem;
+
+        const idCriado = typeof pedidoId === "string" ? pedidoId : pedidoId?.id;
+        if (!idCriado) {
+          throw new Error("O primeiro produto foi enviado, mas o banco não retornou o pedido.");
+        }
+
+        const { data: pedidoCriado, error: erroPedidoCriado } = await supabase
+          .from("pedidos")
+          .select("*")
+          .eq("id", idCriado)
+          .single();
+
+        if (erroPedidoCriado) throw erroPedidoCriado;
+        pedidoAtual = pedidoCriado;
+      } else {
+        const { error: e } = await supabase.rpc("adicionar_item_pedido", {
+          p_pedido_id: pedidoAtual.id,
+          p_produto_id: produtoId,
+          p_quantidade: quantidade,
+          p_observacao: observacao || null
+        });
+
+        if (e) throw e;
+      }
 
       await carregarProdutos();
       await carregarMesas();
